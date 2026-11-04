@@ -19,7 +19,7 @@ SetCompressorDictSize 64
 ; 避免中文路径在部分工具链、脚本、杀软白名单里出问题
 !define APP_NAME    "社区签到助手"
 !define APP_DIR     "SignRover"
-!define APP_VERSION "1.3.0"
+!define APP_VERSION "1.3.1"
 !define APP_EXE     "SignRover.exe"
 !define APP_KEY     "社区签到助手"
 !define APP_PUB     "社区签到助手"

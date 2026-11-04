@@ -3,4 +3,4 @@
 界面侧栏、标题栏、关于信息都读这里；打包脚本里的 NSIS 定义另行独立
 （makensis 读不到 Python），升级时两处一起改，README 的产物行也一起改。
 """
-VERSION = "1.3.0"
+VERSION = "1.3.1"

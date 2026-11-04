@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import os
 import time
 from datetime import datetime
@@ -632,8 +633,10 @@ class AccountsPage(QWidget):
         form.addRow(field_label("社区"), e_community)   # 社区永远排第一行
 
         # 备注名：所有平台通用，填了就覆盖自动取到的昵称（多账号时靠它区分）
-        e_nick = QLineEdit()
-        e_nick.setPlaceholderText("可选，如「Qoder小号」；留空用平台自动取到的昵称")
+        # 注意：e_nick 必须在 _build_fields 内每次重建，否则切换社区时 removeRow
+        # 会把旧控件删掉，之后访问会触发 “Internal C++ object already deleted” 崩溃
+        # （v1.3.0 曾因此导致手动导入整段失效）。
+        e_nick_ref: list[QLineEdit] = []
 
         # 新平台在注册表里声明了新字段类型时，只需在 BUILDERS 里补一个构造器。
         BUILDERS = {
@@ -654,6 +657,7 @@ class AccountsPage(QWidget):
             必填性不一样，共用一行会把必填项排到可选项后面。
             """
             keep = {k: w.text() for k, w in editors.items()}   # 换社区时保留已填内容
+            keep_nick = e_nick_ref[0].text() if e_nick_ref else ""
             while form.rowCount() > 1:                          # 第 0 行是社区，留着
                 form.removeRow(1)
             editors.clear()
@@ -672,6 +676,12 @@ class AccountsPage(QWidget):
                 suffix = "必填" if f.required else "可留空"
                 form.addRow(field_label(f"{f.label}（{suffix}）"), w)
                 order.append(f.key)
+            # 每次重建，避免被上面的 removeRow 把控件删掉后空引用崩溃
+            e_nick = QLineEdit()
+            e_nick.setPlaceholderText("可选，如「Qoder小号」；留空用平台自动取到的昵称")
+            e_nick.setText(keep_nick)
+            e_nick_ref.clear()
+            e_nick_ref.append(e_nick)
             form.addRow(field_label("备注名"), e_nick)   # 备注行固定在字段后面
             dlg.adjustSize()          # 字段多了少了，窗口跟着收放
 
@@ -717,8 +727,8 @@ class AccountsPage(QWidget):
         except ValueError as e:
             QMessageBox.warning(self, "参数不足", str(e))
             return
-        if e_nick.text().strip():                 # 备注名优先于平台自动取的昵称
-            cred.nickname = e_nick.text().strip()
+        if e_nick_ref and e_nick_ref[0].text().strip():   # 备注名优先于平台自动取的昵称
+            cred.nickname = e_nick_ref[0].text().strip()
 
         # ---- 多账号：该平台已有账号时，让用户选「新增」还是「替换」 ----
         existing = self.win.storage.get_account(meta.key, cred.uid)
@@ -1050,12 +1060,22 @@ class TasksPage(QWidget):
         self.lb_progress.setText("")
 
     def append_log(self, level: str, msg: str) -> None:
-        color = {"success": GREEN, "error": RED, "skip": TEXT_MUTED}.get(level, "#3A4560")
+        # 配色与「明细」页（runs_model）完全一致：成功绿 / 失败红 / 跳过灰 / 积分金，
+        # 之前默认字色 #3A4560、时间戳 #A8AEB9 在浅色主题白底上发灰看不清，已全部调深。
+        color = {
+            "success": "#12A150",
+            "error": "#D9363E",
+            "skip": "#8A93A6",
+            "info": "#4C5464",
+        }.get(level, "#4C5464")
         ts = datetime.now().strftime("%H:%M:%S")
         # 接口返回的错误里常带 < > &，不转义会被当成富文本吃掉
         safe = html.escape(str(msg))
+        # 「+数字 货币」用金色高亮，让积分一眼可见（与明细页点数同色 #B7791F）
+        safe = re.sub(r"(\+[\d,]+[ \u4e00-\u9fffA-Za-z]*)",
+                     r"<span style='color:#B7791F'>\1</span>", safe)
         self._log_buf.append(
-            f"<span style='color:#A8AEB9'>[{ts}]</span>&nbsp;&nbsp;"
+            f"<span style='color:#8A93A6'>[{ts}]</span>&nbsp;&nbsp;"
             f"<span style='color:{color}'>{safe}</span>")
         # 每行都 append 会触发一次富文本重排，跑几十步时界面就发涩；
         # 攒一小批一次性插进去，滚动和点击都跟手
