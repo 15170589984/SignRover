@@ -1,0 +1,27 @@
+# ===== 构建产物 =====
+dist/
+build/
+build_new/
+dist_new/
+*.spec.bak
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# ===== 项目数据与隐私 =====
+.workbuddy/
+*.db
+*.db-*bak*
+.signrover/
+
+# ===== 操作系统 / 编辑器 =====
+Thumbs.db
+Desktop.ini
+.DS_Store
+.vscode/
+.idea/

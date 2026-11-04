@@ -1,0 +1,3 @@
+httpx>=0.27
+PySide6>=6.6
+cryptography>=41      # 读 Qoder 客户端登录态（DPAPI + AES-GCM）
