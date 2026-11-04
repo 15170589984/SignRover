@@ -115,8 +115,7 @@ TRAE = CommunityMeta(
     auto_award=True,           # 签到即领取
     import_fields=(
         ImportField("token", "token",
-                    "留空自动读本机 Trae 客户端；也可粘贴抓包里 Authorization 的值",
-                    required=True),
+                    "留空自动读本机 Trae 客户端；也可粘贴抓包里 Authorization 的值"),
     ),
     tasks=(
         TaskOption("checkin", "每日签到领取积分", "签到"),
@@ -150,8 +149,7 @@ WORKBUDDY = CommunityMeta(
     has_roles=False, auto_award=True,
     import_fields=(
         ImportField("token", "token",
-                    "留空自动读本机 WorkBuddy 客户端；也可整段粘贴 cURL 或 Bearer 后面那段",
-                    required=True),
+                    "留空自动读本机 WorkBuddy 客户端；也可整段粘贴 cURL 或 Bearer 后面那段"),
         ImportField("uid", "X-User-Id",
                     "留空自动解析（JWT / 本机客户端 / 粘贴的 cURL 里的请求头）"),
     ),

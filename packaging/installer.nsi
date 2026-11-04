@@ -19,7 +19,7 @@ SetCompressorDictSize 64
 ; 避免中文路径在部分工具链、脚本、杀软白名单里出问题
 !define APP_NAME    "社区签到助手"
 !define APP_DIR     "SignRover"
-!define APP_VERSION "1.3.1"
+!define APP_VERSION "1.3.2"
 !define APP_EXE     "SignRover.exe"
 !define APP_KEY     "社区签到助手"
 !define APP_PUB     "社区签到助手"
@@ -46,12 +46,12 @@ ShowUninstDetails show
 !define MUI_ABORTWARNING_TEXT "确定要退出安装吗？"
 
 !define MUI_WELCOMEPAGE_TITLE "${APP_NAME} 安装向导"
-!define MUI_WELCOMEPAGE_TEXT "本向导将引导你完成 ${APP_NAME} v${APP_VERSION} 的安装。$\r$\n$\r$\n${APP_NAME} 是一款游戏社区与开发工具每日签到的助手，支持米游社（原神 / 星穹铁道 / 绝区零 / 崩坏3 / 未定 / 崩坏学园2）、库街区（鸣潮 / 战双）、以及 Trae / Qoder / WorkBuddy 三个 PC 工具的每日签到与积分查询。$\r$\n$\r$\n社区任务需先在安卓模拟器内登录对应 App；PC 工具在「手动导入」里粘贴凭证即可（Qoder 本机登录过就能自动读取，WorkBuddy 支持整段粘贴 cURL）。详细步骤见安装目录下的「使用说明.txt」。$\r$\n$\r$\n点击「下一步」继续。"
+!define MUI_WELCOMEPAGE_TEXT "本向导将引导你完成 ${APP_NAME} v${APP_VERSION} 的安装。$\r$\n$\r$\n${APP_NAME} 是一款游戏社区与开发工具每日签到的助手，支持米游社（原神 / 星穹铁道 / 绝区零 / 崩坏3 / 未定 / 崩坏学园2）、库街区（鸣潮 / 战双）、以及 Trae / Qoder / WorkBuddy 三个 PC 工具的每日签到与积分查询。$\r$\n$\r$\n社区任务需先在安卓模拟器内登录对应 App；Trae / Qoder / WorkBuddy 只要本机客户端已登录，在「登录账号」里点「自动获取」即可，读不到再手动粘贴 token。同一平台可以登录多个账号。详细步骤见安装目录下的「使用说明.txt」。$\r$\n$\r$\n点击「下一步」继续。"
 
 !define MUI_DIRECTORYPAGE_TEXT_TOP "请选择安装位置。检测到本机已安装旧版本时会自动定位到原位置；你也可以自行修改。全新安装建议使用默认路径。"
 
 !define MUI_FINISHPAGE_TITLE "${APP_NAME} 安装完成"
-!define MUI_FINISHPAGE_TEXT "${APP_NAME} v${APP_VERSION} 已安装到：$\r$\n$INSTDIR$\r$\n$\r$\n第一次使用前，请先在模拟器里登录米游社或库街区，再启动程序并点击「从模拟器添加」；Trae / Qoder / WorkBuddy 用「手动导入」（Qoder 可直接自动读取本机登录态）。$\r$\n$\r$\n完整操作步骤见安装目录下的「使用说明.txt」。"
+!define MUI_FINISHPAGE_TEXT "${APP_NAME} v${APP_VERSION} 已安装到：$\r$\n$INSTDIR$\r$\n$\r$\n第一次使用前，请先在模拟器里登录米游社或库街区；然后启动程序，进入「账号」页点右上角「登录账号」，选平台后「自动获取」或「手动添加」。Trae / Qoder / WorkBuddy 客户端已登录时会自动读取登录态，无需粘贴。同一平台可登录多个账号并在总览页切换。$\r$\n$\r$\n完整操作步骤见安装目录下的「使用说明.txt」。"
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${APP_EXE}"
 !define MUI_FINISHPAGE_RUN_FUNCTION "LaunchApp"
 !define MUI_FINISHPAGE_RUN_TEXT "立即运行 ${APP_NAME}"

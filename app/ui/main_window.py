@@ -382,7 +382,7 @@ class DashboardPage(QWidget):
         lay.addWidget(self.roles_card)
         lay.addStretch(1)
 
-        self.empty_hint = muted("还没有账号。到「账号」页点击「从模拟器添加」即可开始。")
+        self.empty_hint = muted("还没有账号。到「账号」页点击「登录账号」即可添加。")
         self.empty_hint.setAlignment(Qt.AlignCenter)
         lay.addWidget(self.empty_hint)
         self.empty_hint.hide()
@@ -392,7 +392,7 @@ class DashboardPage(QWidget):
         self.account_box.clear()
         for a in accounts:
             self.account_box.addItem(
-                f"{a.community_name} · {a.nickname or '未命名'} ({a.uid})", a.key)
+                f"{a.community_name} · {a.display_name} ({a.uid})", a.key)
         if current:
             i = self.account_box.findData(current.key)
             if i >= 0:
@@ -482,33 +482,28 @@ class AccountsPage(QWidget):
     def __init__(self, win: MainWindow):
         super().__init__()
         self.win = win
-        self._extracting = False
-        self._extract_worker = None
         lay = QVBoxLayout(self)
         lay.setContentsMargins(22, 18, 22, 18)
         lay.setSpacing(14)
 
         head = QHBoxLayout()
         head.setSpacing(8)
-        head.addWidget(page_header("账号", "凭证只保存在本机，可添加多个账号"))
+        head.addWidget(page_header("账号", "凭证只保存在本机，可登录多个账号、随时切换"))
         head.addStretch(1)
         b_del = QPushButton("删除")
         b_del.setObjectName("Danger")
         b_del.clicked.connect(self.remove)
         head.addWidget(b_del)
-        b_manual = ghost_button("手动导入")
-        b_manual.clicked.connect(self.add_manual)
-        head.addWidget(b_manual)
-        self.btn_add = QPushButton("从模拟器添加")
-        self.btn_add.setObjectName("Primary")
-        self.btn_add.setCursor(Qt.PointingHandCursor)
-        self.btn_add.clicked.connect(self.add_from_device)
-        head.addWidget(self.btn_add)
+        b_login = QPushButton("登录账号")
+        b_login.setObjectName("Primary")
+        b_login.setCursor(Qt.PointingHandCursor)
+        b_login.clicked.connect(self.login_action)
+        head.addWidget(b_login)
         lay.addLayout(head)
 
         table_card = Card(padding=0, spacing=0)
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["社区", "昵称", "UID", "余额", "最近更新", "状态"])
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["平台 · 昵称", "UID", "余额", "最近更新", "状态"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(38)
@@ -519,30 +514,34 @@ class AccountsPage(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.table.horizontalHeader().setHighlightSections(False)
-        for j in (3, 4, 5):
+        self.table.cellDoubleClicked.connect(self._on_row_double)
+        for j in (2, 3, 4):
             it = self.table.horizontalHeaderItem(j)
             if it is not None:
                 it.setTextAlignment(Qt.AlignCenter)
         table_card.body().addWidget(self.table)
         lay.addWidget(table_card, 1)
 
-        # PC 工具（注册表里没有模拟器包名）统一走手动导入，列表由注册表生成
-        from core.communities import ALL as _ALL
-        pc_tools = [c.name for c in _ALL if not c.package]
         lay.addWidget(hint(
-            "先在模拟器里登录对应社区的 App，再点「从模拟器添加」自动读取凭证；"
-            "米游社读 Web Cookie 并扫描内存取 stoken，库街区直接读本地存储的 JWT。"
-            + (f"{'、'.join(pc_tools)} 这类 PC 工具走「手动导入」"
-               "（本机客户端有登录态的会自动带出）。" if pc_tools else "")))
+            "点「登录账号」选平台，可「自动获取」或「手动添加」：\n"
+            "· 米游社 / 库街区：自动从安卓模拟器读取登录凭证\n"
+            "· Trae / Qoder / WorkBuddy：自动读取本机已登录的桌面客户端（无需手动粘贴）\n"
+            "同一平台可登录多个账号，在「总览」页右上角下拉切换；双击本表任意一行也可切换。"))
 
     def reload(self, accounts: list[Credential]) -> None:
         from core.communities import get as community_of
+        from PySide6.QtGui import QColor
         self.table.setRowCount(len(accounts))
+        cur_key = self.win.current.key if self.win.current else ""
         for i, a in enumerate(accounts):
             coin = self.win.storage.latest_coin(a.key)
             ok = bool(a.token) if community_of(a.community).auth == "token" else bool(a.stoken)
+            name = a.community_name
+            nick = a.display_name
+            if a.key == cur_key:
+                nick = "● " + nick        # 标记当前账号
             values = [
-                a.community_name, a.nickname or "未命名", a.uid,
+                f"{name} · {nick}", a.uid,
                 f"{coin['total']} {a.currency}" if coin else "-",
                 datetime.fromtimestamp(coin["created_at"]).strftime("%m-%d %H:%M") if coin else "-",
                 "已授权" if ok else "凭证缺失",
@@ -550,245 +549,57 @@ class AccountsPage(QWidget):
             for j, v in enumerate(values):
                 item = QTableWidgetItem(v)
                 if j == 0:
-                    item.setData(Qt.UserRole, a.key)
-                if j in (3, 4, 5):
+                    item.setData(Qt.UserRole, (a.aid, a.community))   # 删除 / 切换用
+                if j in (2, 3, 4):
                     item.setTextAlignment(Qt.AlignCenter)
-                if j == 5:
-                    from PySide6.QtGui import QColor
+                if j == 4:
                     item.setForeground(QColor(GREEN if ok else RED))
                 self.table.setItem(i, j, item)
 
-    def add_from_device(self) -> None:
-        from app.workers import ExtractWorker
-        from core.communities import ALL
+    def login_action(self) -> None:
+        """打开「登录账号」对话框，统一处理自动获取 / 手动添加 / 多账号。"""
+        from app.ui.login_dialog import LoginDialog
+        dlg = LoginDialog(self, self.win.storage)
+        dlg.saved.connect(self._on_account_saved)
+        dlg.exec()
 
-        if getattr(self, "_extracting", False):
-            QMessageBox.information(self, "请稍候", "正在提取凭证，请等待本次完成。")
-            return
-
-        # Trae 等 PC 工具没有模拟器 App，只走手动导入
-        device_all = [c for c in ALL if c.is_device_app]
-        names = [c.name for c in device_all]
-        choice, ok = QInputDialog.getItem(
-            self, "选择社区", "从哪个社区提取登录凭证？", names, 0, False)
-        if not ok or not choice:
-            return
-        meta = device_all[names.index(choice)]
-
-        self._extracting = True
-        self.btn_add.setEnabled(False)
-        self.btn_add.setText("正在提取…")
-        QMessageBox.information(self, f"开始提取 · {meta.name}",
-                                meta.extract_tip or "将从模拟器自动读取登录凭证。")
-
-        w = ExtractWorker(community=meta.key)
-        self._extract_worker = w
-        w.step.connect(lambda s: self.btn_add.setText(s[:14] + "…" if len(s) > 14 else s))
-        w.fail.connect(self._on_extract_fail)
-        w.ok.connect(self._on_extract_ok)
-        w.finished.connect(self._on_extract_done)
-        w.start()
-
-    def _on_extract_done(self) -> None:
-        self._extracting = False
-        self.btn_add.setEnabled(True)
-        self.btn_add.setText("从模拟器添加")
-
-    def _on_extract_fail(self, msg: str) -> None:
-        QMessageBox.warning(self, "提取失败", msg)
-
-    def _on_extract_ok(self, cred) -> None:
-        from core.communities import get as community_of
-        self.win.storage.save_account(cred)
-        self.win.current = cred
-        self.win._load_accounts()
-        if community_of(cred.community).auth == "token":
-            detail = f"token 已自动获取并校验通过（{cred.token[:12]}…）"
-        else:
-            detail = f"stoken 已自动获取并校验通过（{cred.stoken[:10]}…）"
-        QMessageBox.information(
-            self, "添加成功",
-            f"已添加 {cred.community_name} 账号：{cred.masked()}\n\n{detail}")
-        self.win.refresh_data()
-
-    def add_manual(self) -> None:
-        """手动导入凭证。字段由社区注册表 import_fields 驱动，新增平台零改动。"""
-        from PySide6.QtWidgets import QDialog, QDialogButtonBox
-        from core.communities import ALL, get as community_of, prepare_import
-
-        dlg = QDialog(self)
-        dlg.setWindowTitle("手动导入凭证")
-        dlg.setMinimumWidth(560)
-        outer = QVBoxLayout(dlg)
-        outer.setContentsMargins(20, 18, 20, 16)
-        outer.setSpacing(14)
-        form = QFormLayout()
-        form.setHorizontalSpacing(14)
-        form.setVerticalSpacing(12)
-        outer.addLayout(form)
-
-        e_community = QComboBox()
-        for c in ALL:
-            e_community.addItem(c.name, c.key)
-        form.addRow(field_label("社区"), e_community)   # 社区永远排第一行
-
-        # 备注名：所有平台通用，填了就覆盖自动取到的昵称（多账号时靠它区分）
-        # 注意：e_nick 必须在 _build_fields 内每次重建，否则切换社区时 removeRow
-        # 会把旧控件删掉，之后访问会触发 “Internal C++ object already deleted” 崩溃
-        # （v1.3.0 曾因此导致手动导入整段失效）。
-        e_nick_ref: list[QLineEdit] = []
-
-        # 新平台在注册表里声明了新字段类型时，只需在 BUILDERS 里补一个构造器。
-        BUILDERS = {
-            "uid": lambda: (QLineEdit(), None),
-            "token": lambda: (QLineEdit(), None),
-            "stoken": lambda: (QLineEdit(), None),
-            "mid": lambda: (QLineEdit(), None),
-            "cookie": lambda: (QLineEdit(), dict),   # a=1;b=2 解析成 Credential.web_cookies
-        }
-        editors: dict[str, QLineEdit] = {}
-        parsers: dict[str, object] = {}
-        order: list[str] = []
-
-        def _build_fields() -> None:
-            """按当前社区声明的字段逐行重建，顺序完全由注册表决定。
-
-            整行重建而不是整行显隐：同一字段（如 uid）在不同平台里的位置和
-            必填性不一样，共用一行会把必填项排到可选项后面。
-            """
-            keep = {k: w.text() for k, w in editors.items()}   # 换社区时保留已填内容
-            keep_nick = e_nick_ref[0].text() if e_nick_ref else ""
-            while form.rowCount() > 1:                          # 第 0 行是社区，留着
-                form.removeRow(1)
-            editors.clear()
-            parsers.clear()
-            order.clear()
-            meta = community_of(e_community.currentData())
-            for f in meta.import_fields:
-                if f.key in editors:
-                    continue
-                builder = BUILDERS.get(f.key) or (lambda: (QLineEdit(), None))
-                w, ptype = builder()
-                w.setText(keep.get(f.key, ""))
-                w.setPlaceholderText(f.placeholder)
-                editors[f.key] = w
-                parsers[f.key] = ptype
-                suffix = "必填" if f.required else "可留空"
-                form.addRow(field_label(f"{f.label}（{suffix}）"), w)
-                order.append(f.key)
-            # 每次重建，避免被上面的 removeRow 把控件删掉后空引用崩溃
-            e_nick = QLineEdit()
-            e_nick.setPlaceholderText("可选，如「Qoder小号」；留空用平台自动取到的昵称")
-            e_nick.setText(keep_nick)
-            e_nick_ref.clear()
-            e_nick_ref.append(e_nick)
-            form.addRow(field_label("备注名"), e_nick)   # 备注行固定在字段后面
-            dlg.adjustSize()          # 字段多了少了，窗口跟着收放
-
-        e_community.currentIndexChanged.connect(_build_fields)
-        _build_fields()
-
-        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.button(QDialogButtonBox.Ok).setText("导入")
-        bb.button(QDialogButtonBox.Ok).setObjectName("Primary")
-        bb.button(QDialogButtonBox.Ok).setCursor(Qt.PointingHandCursor)
-        bb.button(QDialogButtonBox.Cancel).setText("取消")
-        bb.accepted.connect(dlg.accept)
-        bb.rejected.connect(dlg.reject)
-        outer.addWidget(bb)
-        if dlg.exec() != QDialog.Accepted:
-            return
-
-        meta = community_of(e_community.currentData())
-        spec = {f.key: f for f in meta.import_fields}
-        cred = Credential(community=meta.key)
-        for key in order:
-            if key not in spec:
-                continue
-            text = editors[key].text().strip()
-            if parsers[key] is dict:              # Cookie 串解析成 dict
-                cookies = {}
-                for part in text.split(";"):
-                    if "=" in part:
-                        k, v = part.split("=", 1)
-                        cookies[k.strip()] = v.strip()
-                cred.web_cookies = cookies
-            elif hasattr(cred, key):              # 标准字段（uid / token / stoken / mid）
-                setattr(cred, key, text)
-            else:                                 # 平台私有字段统一进 extra，不用改模型
-                cred.extra[key] = text
-        for f in meta.import_fields:              # 通用必填校验
-            value = getattr(cred, f.key, "") or cred.extra.get(f.key, "")
-            if f.required and not value:
-                QMessageBox.warning(self, "参数不足", f"{meta.name}的「{f.label}」必填")
-                return
-        try:
-            prepare_import(cred)                  # 社区自己的补全 / 深度校验
-        except ValueError as e:
-            QMessageBox.warning(self, "参数不足", str(e))
-            return
-        if e_nick_ref and e_nick_ref[0].text().strip():   # 备注名优先于平台自动取的昵称
-            cred.nickname = e_nick_ref[0].text().strip()
-
-        # ---- 多账号：该平台已有账号时，让用户选「新增」还是「替换」 ----
-        existing = self.win.storage.get_account(meta.key, cred.uid)
-        siblings = [a for a in self.win.storage.list_accounts()
-                    if a.community == meta.key and a.uid != cred.uid]
-        if existing or siblings:
-            box = QMessageBox(self)
-            box.setIcon(QMessageBox.Question)
-            box.setWindowTitle(f"导入 {meta.name} 账号")
-            if existing:
-                # 同 ID 是同一个账号，不能另存两份，只能更新凭证
-                box.setText(
-                    f"{meta.name} 里已有同 ID 账号：{existing.nickname or existing.uid}\n\n"
-                    "选「替换」会更新这个账号的登录凭证，取消则不做任何改动。")
-                b_new = None
-            else:
-                others = "、".join(a.nickname or a.uid for a in siblings)
-                box.setText(
-                    f"{meta.name} 下已有账号：{others}\n\n"
-                    "「新增保存」把这次导入的作为另一个账号（一个平台可挂多个账号，"
-                    "任务页可逐个执行）；「替换」会删掉已有账号换成这次导入的。")
-                b_new = box.addButton("新增保存", QMessageBox.YesRole)
-            b_replace = box.addButton(
-                "替换原账号" if existing else "替换已有账号", QMessageBox.DestructiveRole)
-            b_cancel = box.addButton("取消", QMessageBox.RejectRole)
-            box.exec()
-            clicked = box.clickedButton()
-            if clicked is b_cancel or clicked is None:
-                return
-            if clicked is b_replace:
-                targets = [existing] if existing else siblings
-                if not existing and len(siblings) > 1:
-                    labels = [f"{a.nickname or '未命名'} ({a.uid})" for a in siblings]
-                    choice, ok2 = QInputDialog.getItem(
-                        self, "替换哪个账号", "要替换掉哪个账号？", labels, 0, False)
-                    if not ok2:
-                        return
-                    targets = [siblings[labels.index(choice)]]
-                for a in targets:
-                    self.win.storage.delete_account(a.uid, a.community)
-
-        self.win.storage.save_account(cred)
+    def _on_account_saved(self, cred) -> None:
+        """对话框保存成功后：切到该账号并刷新。"""
         self.win.current = cred
         self.win._load_accounts()
         self.win.refresh_data()
+
+    def _on_row_double(self, row: int) -> None:
+        """双击任意一行：切换为当前账号。"""
+        item = self.table.item(row, 0)
+        if not item:
+            return
+        ref = item.data(Qt.UserRole)
+        if not isinstance(ref, (tuple, list)) or len(ref) < 2:
+            return
+        aid, community = ref[0], ref[1]
+        acc = self.win.storage.get_account_by_aid(aid)
+        if acc:
+            self.win.switch_account(acc.key)
+            self.win.statusBar().showMessage(
+                f"已切换到 {acc.community_name} · {acc.display_name}")
 
     def remove(self) -> None:
         r = self.table.currentRow()
         if r < 0:
             return
         item = self.table.item(r, 0)
-        key = (item.data(Qt.UserRole) if item else "") or ""
-        community, _, uid = key.partition(":")
-        if not uid:
-            uid = self.table.item(r, 2).text() if self.table.item(r, 2) else ""
-        label = self.table.item(r, 0).text() if self.table.item(r, 0) else community
+        ref = item.data(Qt.UserRole) if item else None
+        if not isinstance(ref, (tuple, list)) or len(ref) < 2:
+            return
+        aid, community = ref[0], ref[1]
+        label = item.text() if item else community
         if QMessageBox.question(self, "确认",
-                                f"删除 {label} 账号 {uid} ？") == QMessageBox.Yes:
-            self.win.storage.delete_account(uid, community or "mihoyo")
-            self.win.current = None
+                                f"删除 {label} 账号？") == QMessageBox.Yes:
+            self.win.storage.delete_account(aid, community)
+            # 删的是当前账号就清空，否则保留当前
+            if self.win.current and self.win.current.aid == aid:
+                self.win.current = None
             self.win._load_accounts()
 
 
@@ -970,7 +781,7 @@ class TasksPage(QWidget):
         self._filling = True
         self.cb_account.clear()
         for a in accounts:
-            self.cb_account.addItem(f"{a.community_name} · {a.nickname or a.uid}", a.key)
+            self.cb_account.addItem(f"{a.community_name} · {a.display_name}", a.key)
         if len(accounts) > 1:
             self.cb_account.addItem("全部平台（依次执行）", self.ALL)
         target = keep if keep and self.cb_account.findData(keep) >= 0 else (
@@ -1017,7 +828,7 @@ class TasksPage(QWidget):
             names = [t.short or t.label for t in community_of(a.community).tasks
                      if t.key in picked]
             self.all_list.addWidget(muted(
-                f"{i}. {a.community_name} · {a.nickname or a.uid} — "
+                f"{i}. {a.community_name} · {a.display_name} — "
                 + ("、".join(names) if names else "未勾选任何任务")))
 
     def _on_pick(self, _i: int) -> None:
@@ -1249,12 +1060,12 @@ class LogsPage(QWidget):
         self.cb_account.addItem("当前账号", self.FOLLOW)
         self.cb_account.addItem("全部账号", "")
         for a in accounts:
-            self.cb_account.addItem(f"{a.community_name} · {a.nickname or a.uid}", a.key)
+            self.cb_account.addItem(f"{a.community_name} · {a.display_name}", a.key)
         idx = self.cb_account.findData(keep)
         self.cb_account.setCurrentIndex(idx if idx >= 0 else 0)
         self._filling = False
         # 表格里也显示昵称，比一串 UID 好认
-        self.model.set_names({a.key: f"{a.community_name} · {a.nickname or a.uid}"
+        self.model.set_names({a.key: f"{a.community_name} · {a.display_name}"
                               for a in accounts})
         self.invalidate()
 

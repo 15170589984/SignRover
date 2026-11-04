@@ -45,7 +45,12 @@ class Credential:
     不同社区的字段含义不同，用 community 区分：
     - mihoyo：uid=米游社 uid，stoken/web_cookies 两套会话
     - kuro：uid=库街区账号 userId，token=JWT
+
+    aid 是数据库里的自增主键，用来在「同一平台多账号」下做唯一标识：
+    两个库街区账号可能 uid 不同、也可能（极少见）撞 uid，aid 永远唯一。
+    key 因此基于 aid 而非 uid，切换账号、关联执行记录都不会串。
     """
+    aid: int = 0                # 数据库自增主键；0 表示尚未落库
     uid: str = ""
     nickname: str = ""
     mid: str = ""
@@ -72,8 +77,8 @@ class Credential:
 
     @property
     def key(self) -> str:
-        """账号在库里的唯一键（跨社区不冲突）。"""
-        return f"{self.community}:{self.uid}"
+        """账号在库里的唯一键（基于 aid，跨平台、同平台多账号都不冲突）。"""
+        return f"{self.community}:{self.aid}"
 
     @property
     def app_cookie(self) -> str:
@@ -95,7 +100,20 @@ class Credential:
         return bool(self.uid and (self.stoken or self.web_cookies.get("ltuid")))
 
     def masked(self) -> str:
-        return f"{self.nickname or '未命名'}({self.uid})" if self.uid else "未命名"
+        return f"{self.display_name}({self.uid})" if self.uid else "未命名"
+
+    @property
+    def display_name(self) -> str:
+        """界面展示用的名字。
+
+        有的平台（Trae）token 里根本没有昵称，多个账号都叫「未命名」就分不清了，
+        所以退回用 UID 尾巴拼一个能区分的名字。
+        """
+        if self.nickname:
+            return self.nickname
+        if self.uid:
+            return f"账号{self.uid[-4:]}"
+        return "未命名"
 
 
 @dataclass

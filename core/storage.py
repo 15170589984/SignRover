@@ -11,8 +11,9 @@ from core.models import Credential
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (
+    aid         INTEGER PRIMARY KEY AUTOINCREMENT,
     community   TEXT NOT NULL DEFAULT 'mihoyo',
-    uid         TEXT NOT NULL,
+    uid         TEXT NOT NULL DEFAULT '',
     nickname    TEXT DEFAULT '',
     mid         TEXT DEFAULT '',
     stoken      TEXT DEFAULT '',
@@ -24,8 +25,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     device_name TEXT DEFAULT '',
     device_model TEXT DEFAULT '',
     created_at  INTEGER DEFAULT 0,
-    updated_at  INTEGER DEFAULT 0,
-    PRIMARY KEY (community, uid)
+    updated_at  INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS runs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,12 +49,14 @@ CREATE TABLE IF NOT EXISTS coin_snapshots (
 );
 """
 
-# 旧版（单社区）账号表结构 → 新版多社区结构的迁移
+# 旧版（单社区）账号表结构 → 新版多社区结构的迁移。
+# 这里直接建带 aid 多账号主键的新表，免得后面再跑一次 aid 升级。
 MIGRATE_V1 = """
 ALTER TABLE accounts RENAME TO accounts_v1;
 CREATE TABLE accounts (
+    aid         INTEGER PRIMARY KEY AUTOINCREMENT,
     community   TEXT NOT NULL DEFAULT 'mihoyo',
-    uid         TEXT NOT NULL,
+    uid         TEXT NOT NULL DEFAULT '',
     nickname    TEXT DEFAULT '',
     mid         TEXT DEFAULT '',
     stoken      TEXT DEFAULT '',
@@ -66,12 +68,11 @@ CREATE TABLE accounts (
     device_name TEXT DEFAULT '',
     device_model TEXT DEFAULT '',
     created_at  INTEGER DEFAULT 0,
-    updated_at  INTEGER DEFAULT 0,
-    PRIMARY KEY (community, uid)
+    updated_at  INTEGER DEFAULT 0
 );
-INSERT INTO accounts(community,uid,nickname,mid,stoken,web_cookies,device_id,device_fp,
+INSERT INTO accounts(community,uid,nickname,mid,stoken,token,web_cookies,extra,device_id,device_fp,
                      device_name,device_model,created_at,updated_at)
-    SELECT 'mihoyo',uid,nickname,mid,stoken,web_cookies,device_id,device_fp,
+    SELECT 'mihoyo',uid,nickname,mid,stoken,'',web_cookies,'{}',device_id,device_fp,
            device_name,device_model,created_at,updated_at
     FROM accounts_v1;
 DROP TABLE accounts_v1;
@@ -91,6 +92,10 @@ class Storage:
             self._con.commit()
 
     def _migrate(self) -> None:
+        mapping: dict[str, str] = {}     # 旧 key "community:uid" → 新 key "community:aid"
+        migrated = False
+
+        # 1) 极老版本（单社区、accounts 没有 community 列）→ 补 community（MIGRATE_V1 已带 aid）
         row = self._con.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='accounts'").fetchone()
         if row:
@@ -98,7 +103,81 @@ class Storage:
             if "community" not in cols:
                 self._con.executescript(MIGRATE_V1)
                 self._con.commit()
-        # 老库的 runs 没有 currency 列，补上（旧记录留空，展示时按账号所属平台推断）
+                migrated = True
+
+        # 2) 没有 aid 列 → 升级为多账号结构（aid 自增主键）
+        row = self._con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='accounts'").fetchone()
+        if row:
+            cols = [r[1] for r in self._con.execute("PRAGMA table_info(accounts)").fetchall()]
+            if "aid" not in cols:
+                self._con.execute("ALTER TABLE accounts RENAME TO accounts_legacy")
+                self._con.execute(
+                    """CREATE TABLE accounts (
+                        aid INTEGER PRIMARY KEY AUTOINCREMENT,
+                        community TEXT NOT NULL DEFAULT 'mihoyo',
+                        uid TEXT NOT NULL DEFAULT '',
+                        nickname TEXT DEFAULT '',
+                        mid TEXT DEFAULT '',
+                        stoken TEXT DEFAULT '',
+                        token TEXT DEFAULT '',
+                        web_cookies TEXT DEFAULT '{}',
+                        extra TEXT DEFAULT '{}',
+                        device_id TEXT DEFAULT '',
+                        device_fp TEXT DEFAULT '',
+                        device_name TEXT DEFAULT '',
+                        device_model TEXT DEFAULT '',
+                        created_at INTEGER DEFAULT 0,
+                        updated_at INTEGER DEFAULT 0
+                    )""")
+                self._con.execute(
+                    """INSERT INTO accounts(community,uid,nickname,mid,stoken,token,
+                           web_cookies,extra,device_id,device_fp,device_name,device_model,
+                           created_at,updated_at)
+                       SELECT community,uid,nickname,mid,stoken,token,web_cookies,extra,
+                              device_id,device_fp,device_name,device_model,created_at,updated_at
+                       FROM accounts_legacy""")
+                self._con.execute("DROP TABLE accounts_legacy")
+                self._con.commit()
+                migrated = True
+
+        if migrated:
+            def _has(table: str) -> bool:
+                return self._con.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                    (table,)).fetchone() is not None
+
+            # 极老版本可能还没有 runs / coin_snapshots 表（SCHEMA 在这之后才建）
+            has_runs, has_coin = _has("runs"), _has("coin_snapshots")
+            # 账号主键从 uid 换成 aid，所有挂在旧 key 上的历史数据都要跟着搬家，
+            # 否则换账号后余额、执行记录会整体"失联"显示为空。
+            for r in self._con.execute(
+                    "SELECT aid, community, uid FROM accounts").fetchall():
+                mapping[f"{r['community']}:{r['uid']}"] = f"{r['community']}:{r['aid']}"
+            for old_key, new_key in mapping.items():
+                if has_runs:
+                    self._con.execute("UPDATE runs SET account_uid=? WHERE account_uid=?",
+                                      (new_key, old_key))
+                if has_coin:
+                    self._con.execute(
+                        "UPDATE coin_snapshots SET account_uid=? WHERE account_uid=?",
+                        (new_key, old_key))
+            # 更早的米游社单社区版本直接存 uid（没有社区前缀），补一轮
+            for r in self._con.execute(
+                    "SELECT aid, uid FROM accounts WHERE community='mihoyo'").fetchall():
+                new_key = f"mihoyo:{r['aid']}"
+                if has_runs:
+                    self._con.execute(
+                        "UPDATE runs SET account_uid=? WHERE account_uid=?"
+                        " AND account_uid NOT LIKE '%:%'", (new_key, r["uid"]))
+                if has_coin:
+                    self._con.execute(
+                        "UPDATE coin_snapshots SET account_uid=? "
+                        "WHERE account_uid=? AND account_uid NOT LIKE '%:%'",
+                        (new_key, r["uid"]))
+            self._con.commit()
+
+        # 3) 老库的 runs 没有 currency 列，补上（旧记录留空，展示时按账号所属平台推断）
         r2 = self._con.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='runs'").fetchone()
         if r2:
@@ -112,26 +191,34 @@ class Storage:
             self._con.close()
 
     # ---------- 账号 ----------
-    def save_account(self, c: Credential) -> None:
+    def save_account(self, c: Credential) -> int:
+        """保存账号，返回其 aid。
+
+        c.aid 有值且库里存在 → 就地更新（编辑 / 覆盖同一账号）；
+        c.aid 为空 → 新插入一行（即使同一平台已有其它账号，也能并存）。
+        """
         now = int(time.time())
+        web = json.dumps(c.web_cookies, ensure_ascii=False)
+        ex = json.dumps(c.extra, ensure_ascii=False)
         with self._lock:
+            if c.aid:
+                self._con.execute(
+                    """UPDATE accounts SET community=?,uid=?,nickname=?,mid=?,stoken=?,token=?,
+                           web_cookies=?,extra=?,device_id=?,device_fp=?,device_name=?,
+                           device_model=?,updated_at=?
+                       WHERE aid=?""",
+                    (c.community, c.uid, c.nickname, c.mid, c.stoken, c.token, web, ex,
+                     c.device_id, c.device_fp, c.device_name, c.device_model, now, c.aid))
+                self._con.commit()
+                return c.aid
             self._con.execute(
                 """INSERT INTO accounts(community,uid,nickname,mid,stoken,token,web_cookies,extra,
                        device_id,device_fp,device_name,device_model,created_at,updated_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                   ON CONFLICT(community,uid) DO UPDATE SET
-                       nickname=excluded.nickname, mid=excluded.mid, stoken=excluded.stoken,
-                       token=excluded.token,
-                       web_cookies=excluded.web_cookies, extra=excluded.extra,
-                       device_id=excluded.device_id,
-                       device_fp=excluded.device_fp, device_name=excluded.device_name,
-                       device_model=excluded.device_model, updated_at=excluded.updated_at""",
-                (c.community, c.uid, c.nickname, c.mid, c.stoken, c.token,
-                 json.dumps(c.web_cookies, ensure_ascii=False),
-                 json.dumps(c.extra, ensure_ascii=False),
-                 c.device_id, c.device_fp, c.device_name, c.device_model, now, now),
-            )
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (c.community, c.uid, c.nickname, c.mid, c.stoken, c.token, web, ex,
+                 c.device_id, c.device_fp, c.device_name, c.device_model, now, now))
             self._con.commit()
+            return self._con.execute("SELECT last_insert_rowid()").fetchone()[0]
 
     def list_accounts(self) -> list[Credential]:
         with self._lock:
@@ -140,16 +227,24 @@ class Storage:
         return [self._cred_from_row(r) for r in rows]
 
     def get_account(self, community: str, uid: str) -> Credential | None:
-        """按 (community, uid) 精确取一个账号，没有返回 None。"""
+        """按 (community, uid) 取一个账号（用于判断「同一账号已存在」）。"""
         with self._lock:
             r = self._con.execute(
-                "SELECT * FROM accounts WHERE community=? AND uid=?",
+                "SELECT * FROM accounts WHERE community=? AND uid=? LIMIT 1",
                 (community, uid)).fetchone()
+        return self._cred_from_row(r) if r else None
+
+    def get_account_by_aid(self, aid: int) -> Credential | None:
+        """按 aid 精确取一个账号（删除 / 切换用）。"""
+        with self._lock:
+            r = self._con.execute(
+                "SELECT * FROM accounts WHERE aid=?", (aid,)).fetchone()
         return self._cred_from_row(r) if r else None
 
     @staticmethod
     def _cred_from_row(r) -> Credential:
         return Credential(
+            aid=int(r["aid"] or 0),
             uid=r["uid"], nickname=r["nickname"], mid=r["mid"], stoken=r["stoken"],
             token=r["token"] or "",
             web_cookies=json.loads(r["web_cookies"] or "{}"),
@@ -160,10 +255,14 @@ class Storage:
             device_model=r["device_model"] or "2201123C",
         )
 
-    def delete_account(self, uid: str, community: str = "mihoyo") -> None:
+    def delete_account(self, aid: int, community: str | None = None) -> None:
+        """按 aid 删除账号（community 仅作二次校验，避免误删）。"""
         with self._lock:
-            self._con.execute(
-                "DELETE FROM accounts WHERE uid=? AND community=?", (uid, community))
+            if community is None:
+                self._con.execute("DELETE FROM accounts WHERE aid=?", (aid,))
+            else:
+                self._con.execute(
+                    "DELETE FROM accounts WHERE aid=? AND community=?", (aid, community))
             self._con.commit()
 
     # ---------- 执行记录 ----------

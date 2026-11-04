@@ -39,9 +39,9 @@
 | 每日签到 | ✅ 可用 | `POST /api/v1/checkin`，`{code:0}` 即到账 |
 | 积分余额 / 今日已得 | ✅ 可用 | 余额按 `total_amount - consumed_amount`，今日按 status 的 `credits` |
 | 活动奖励 | ✅ 可用 | 活动页 `work_credits`（当前 200/期） |
-| 凭证导入 | ✅ 手动 | 抓包取请求头 `Authorization`（`Cloud-IDE-JWT xxx`，带不带前缀都行），只需这一个字段 |
+| 凭证导入 | ✅ 自动 | 账号页「登录账号」→ 自动获取，读本机 Trae 客户端登录态；读不到再贴请求头 `Authorization` 的值 |
 
-> Trae 是桌面 IDE 不是手机 App，没有模拟器可读，所以走「手动导入」。
+> Trae 是桌面 IDE 不是手机 App，没有模拟器可读，所以走「登录账号」里的自动获取。
 > 请求头里的 `x-app-version` / `package-type` / `x-device-id` 客户端自己补齐，
 > 用户不用管；签到接口 GET 被拒时自动降级为 POST。
 
@@ -134,7 +134,7 @@ python -m PyInstaller --noconfirm SignRover.spec
 "C:/Program Files (x86)/NSIS/makensis.exe" /DPROJ="D:/Liujiang/PythonProject/signrover" packaging/installer.nsi
 ```
 
-产物：`dist/社区签到助手_v1.3.1_安装包.exe`（约 40 MB）。
+产物：`dist/社区签到助手_v1.3.2_安装包.exe`（约 40 MB）。
 
 安装包行为：
 
@@ -184,7 +184,7 @@ python -m PyInstaller --noconfirm SignRover.spec
 1. **Web 凭证**（`ltuid` / `cookie_token_v2` / `ltoken_v2` 等）—— 明文存在模拟器的 WebView cookie 库里，root 下直接读，用于游戏签到与角色查询。
 2. **App 凭证**（`stuid` + `stoken` + `mid`）—— 加密存在 `porte_sdk_token_PRODUCT.xml`，但运行时明文驻留内存；root 下扫 `/proc/<pid>/mem` 可取，用于任务、米游币、社区打卡。
 
-「从模拟器添加」会一次性把两套都拿到：
+在「登录账号」里对米游社点「自动获取」，会一次性把两套都拿到：
 
 1. 读 `app_webview/Default/Cookies` 拿 Web 凭证
 2. 扫 App 进程内存，正则 `v2_[A-Za-z0-9_.=-]{100,240}` 抓候选 stoken
@@ -274,10 +274,10 @@ bin/            随包分发的 adb
    | 字段 | 作用 |
    |---|---|
    | `key` / `name` / `pkg` / `currency` | 内部标识、界面显示名、模拟器包名、货币名 |
-   | `import_fields` | 手动导入要填哪些项，`ImportField(key, label, required, placeholder)`；界面只显示必填项 + 该平台相关项 |
+   | `import_fields` | 手动添加要填哪些项，`ImportField(key, label, required, placeholder)`；界面只显示必填项 + 该平台相关项 |
    | `tasks` | 任务页的勾选项，`TaskOption(key, label)`，顺序即界面顺序 |
    | `boards` / `default_gids` | 分板块的社区（如米游社）才有，用于板块勾选 |
-   | `extract_tip` | 「从模拟器添加」时的提示文案 |
+   | `extract_tip` | 「自动获取」时的提示文案 |
    | `auto_award` | 任务完成即时到账（无「待领取」步骤）的平台置 `True` |
 
 2. 在 `communities/<key>/` 下写 `client.py` + `provider.py`，provider 需提供

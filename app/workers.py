@@ -93,6 +93,34 @@ class ExtractWorker(QThread):
             return
         raise AdbError("找到的 token 全部校验失败，请在模拟器里重新登录库街区后再试。")
 
+
+class PrepareWorker(QThread):
+    """跑 prepare_import：对 PC 工具平台自动读本机登录态，对所有平台做校验 / 补全。
+
+    手动导入或「自动获取」拿到原始输入后，都交给它来统一解析 token、补全
+    uid / 昵称、必要时联网校验有效性。成功 emit 补全后的 cred，失败 emit 文案。
+    """
+
+    ok = Signal(object)            # Credential（已补全）
+    fail = Signal(str)             # 错误文案
+    step = Signal(str)             # 进度文案
+
+    def __init__(self, community: str, cred: Credential, parent=None):
+        super().__init__(parent)
+        self.community = community
+        self.cred = cred
+
+    def run(self) -> None:
+        from core.communities import prepare_import
+        try:
+            self.step.emit("正在解析并校验凭证…")
+            prepare_import(self.cred)
+            self.ok.emit(self.cred)
+        except ValueError as e:
+            self.fail.emit(str(e))
+        except Exception as e:                       # noqa: BLE001
+            self.fail.emit(f"{type(e).__name__}: {e}")
+
     def _extract_mihoyo(self, e) -> None:
         from device.emulator import AdbError
         if not e.is_installed():
