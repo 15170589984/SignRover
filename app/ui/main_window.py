@@ -154,6 +154,9 @@ class MainWindow(QMainWindow):
             if a.key == key:
                 self.current = a
                 break
+        # 先把界面切到骨架屏：即使上一轮刷新还在跑，也不能让旧账号的
+        # 余额和任务在新账号下多挂几秒。
+        self.page_dashboard.set_loading(True)
         self.page_tasks.set_account(self.current)
         if self.current:
             self.page_dashboard.apply_currency(self.current.currency)
@@ -190,6 +193,12 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(120, self.refresh_data)
 
     def _on_snapshot(self, snap) -> None:
+        # 切换账号后上一轮刷新可能才返回：这份数据属于旧账号，画上去就是串号。
+        w = self._refresh_worker
+        if (w is not None and self.current
+                and getattr(getattr(w, "cred", None), "key", "") != self.current.key):
+            self._after_refresh()
+            return
         self.page_dashboard.set_loading(False)
         self.page_dashboard.render(snap)
         if self.current:
@@ -206,6 +215,11 @@ class MainWindow(QMainWindow):
         self._after_refresh()
 
     def _on_refresh_fail(self, msg: str) -> None:
+        w = self._refresh_worker
+        if (w is not None and self.current
+                and getattr(getattr(w, "cred", None), "key", "") != self.current.key):
+            self._after_refresh()       # 旧账号的失败，与当前账号无关
+            return
         self.page_dashboard.set_loading(False)
         self.statusBar().showMessage(f"拉取失败：{msg}")
         self._after_refresh()
