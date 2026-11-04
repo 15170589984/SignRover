@@ -599,6 +599,11 @@ class AccountsPage(QWidget):
         table_card = Card(padding=0, spacing=0)
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["平台", "昵称", "UID", "余额", "最近更新", "状态"])
+        # 表头默认居中，必须显式改成左对齐，才能和下面的值对齐
+        for _j in range(self.table.columnCount()):
+            _it = self.table.horizontalHeaderItem(_j)
+            if _it is not None:
+                _it.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(38)

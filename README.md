@@ -135,7 +135,7 @@ python -m PyInstaller --noconfirm SignRover.spec
 "C:/Program Files (x86)/NSIS/makensis.exe" /DPROJ="D:/Liujiang/PythonProject/signrover" packaging/installer.nsi
 ```
 
-产物：`dist/社区签到助手_v1.3.4_安装包.exe`（约 40 MB）。
+产物：`dist/社区签到助手_v1.3.5_安装包.exe`（约 40 MB）。
 
 安装包行为：
 
