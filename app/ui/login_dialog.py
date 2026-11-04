@@ -114,7 +114,8 @@ class LoginDialog(QDialog):
         self.manual_form.setVerticalSpacing(10)
         m.addLayout(self.manual_form)
         m.addWidget(hint("可粘贴 token / 鉴权串；米游社、库街区也可直接粘贴 Cookie 或整段 cURL，"
-                         "程序自动识别并补全昵称、UID。PC 工具的 token 留空时也会自动读取本机登录态。"))
+                         "程序自动识别并补全昵称、UID。PC 工具的 token 留空时也会自动读取本机登录态。"
+                         "Qoder 粘贴 token 时会自动判断是国内版还是国际版。"))
         m.addStretch(1)
         self.tabs.addTab(self.manual_page, "手动添加")
 
@@ -322,13 +323,23 @@ class LoginDialog(QDialog):
         existing = self.storage.get_account(cred.community, cred.uid) if cred.uid else None
         if existing and existing.aid == cred.aid:      # 编辑自己，不算冲突
             existing = None
+        same_uid = existing is not None
+        if existing is None and cred.token:
+            # 同一个 token 就是同一个账号：早期版本可能把 uid 存成了 token 指纹
+            # （比如 Qoder 域名认错时），再导入一次要就地修正，不能多出一条废账号
+            same = [a for a in all_of_platform
+                    if a.aid != cred.aid and (a.token or "").strip() == cred.token.strip()]
+            if same:
+                existing = same[0]
         others = [a for a in all_of_platform if not existing or a.aid != existing.aid]
 
         if existing:
+            why = "同一 UID" if same_uid else "同一 token"
             r = QMessageBox.question(
                 self, "确认覆盖",
-                f"{cred.community_name} 里已有同一 UID 的账号：{existing.display_name}\n\n"
-                "同一账号不能存两份，是否用这次的凭证覆盖更新它？",
+                f"{cred.community_name} 里已有这个账号（{why}）：{existing.display_name}\n\n"
+                "同一账号不能存两份，是否用这次的凭证覆盖更新它？"
+                + ("" if same_uid else "\n（旧记录里的 UID 会一并修正）"),
                 QMessageBox.Yes | QMessageBox.No)
             if r != QMessageBox.Yes:
                 return

@@ -1,8 +1,8 @@
 # ===== 构建产物 =====
 dist/
+dist_*/
 build/
-build_new/
-dist_new/
+build_*/
 *.spec.bak
 
 # ===== Python =====

@@ -51,7 +51,8 @@
 |---|---|---|
 | 每日领取 100 Credits | ✅ 可用 | 活动制：`me/campaigns` 找 `CLAIM_BENEFIT` 那轮，`POST …/claim` 领取 |
 | 余额 / 今日获得 | ✅ 可用 | 余额 = `userQuota.remaining + addOnQuota.remaining` |
-| 凭证 | ✅ 自动 | token 留空即读本机客户端登录态（`%APPDATA%\com.qodercn.app.stable`，DPAPI + AES-256-GCM 解 `auth.v1.dat`）；也可手动粘贴 |
+| 凭证 | ✅ 自动 | token 留空即读本机客户端登录态（`%APPDATA%\com.qodercn.app.stable` 国内版 / `com.qoder.app.stable` 国际版，DPAPI + AES-256-GCM 解 `auth.v1.dat`）；也可手动粘贴 |
+| 双域名 | ✅ 自动 | 国内 `openapi.qoder.com.cn`、国际 `openapi.qoder.sh` 是两套服务、token 不通用；导入时依次探测并记住该账号所属域名 |
 
 > Qoder 的奖励是「活动」形式，每天 10:00（UTC+8）滚动一轮，领到的 Credits 30 天有效。
 > 活动窗口 `startAt/endAt` 是**秒级**时间戳，按毫秒判断会永远认为窗口已关闭。
@@ -134,7 +135,7 @@ python -m PyInstaller --noconfirm SignRover.spec
 "C:/Program Files (x86)/NSIS/makensis.exe" /DPROJ="D:/Liujiang/PythonProject/signrover" packaging/installer.nsi
 ```
 
-产物：`dist/社区签到助手_v1.3.2_安装包.exe`（约 40 MB）。
+产物：`dist/社区签到助手_v1.3.3_安装包.exe`（约 40 MB）。
 
 安装包行为：
 

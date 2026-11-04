@@ -133,14 +133,15 @@ QODER = CommunityMeta(
     has_roles=False, auto_award=True,
     import_fields=(
         ImportField("token", "token",
-                    "留空则自动读取本机 Qoder 客户端登录态（dt- 开头）；也可手动粘贴"),
+                    "留空自动读本机 Qoder 客户端（dt- 开头）；也可粘贴抓包里 Bearer 后面那段"),
     ),
     tasks=(
         TaskOption("checkin", "每日领取 100 Credits（10:00 刷新）", "签到"),
     ),
     task_hint=("说明：Qoder 的每日奖励是「活动」形式，每天 10:00（UTC+8）滚动一轮，\n"
-               "每轮 100 Credits，领取后 30 天有效。token 留空会自动读本机客户端登录态，\n"
-               "读不到时手动粘贴抓包请求头 Authorization 里 Bearer 后面那段即可。"),
+               "每轮 100 Credits，领取后 30 天有效。\n"
+               "国内版（openapi.qoder.com.cn）和国际版（openapi.qoder.sh）是两套服务，\n"
+               "token 不通用；导入时会自动识别该 token 属于哪个版本，不用你选。"),
 )
 
 WORKBUDDY = CommunityMeta(

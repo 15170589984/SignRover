@@ -14,7 +14,7 @@ import hashlib
 import time
 from dataclasses import dataclass, field
 
-from communities.qoder.client import QoderClient, uid_of
+from communities.qoder.client import BASE_CN, BASE_INTL, QoderClient, uid_of
 from communities.qoder.client import campaign_amount, parse_usage, pick_campaign
 from core.models import CoinInfo, Credential, MissionItem, TaskKind, TaskResult, TaskStatus
 from core.storage import Storage
@@ -45,7 +45,9 @@ class QoderProvider:
             min_interval = settings().interval
         self.cred = cred
         self.storage = storage
-        self.client = QoderClient(cred.token, min_interval=min_interval)
+        # 国内版 / 国际版是两套独立服务，token 不通用，域名必须跟着账号走
+        base = (cred.extra or {}).get("base") or BASE_CN
+        self.client = QoderClient(cred.token, base=base, min_interval=min_interval)
         self._log: list[str] = []
 
     def close(self) -> None:
@@ -172,21 +174,43 @@ def uid_from_token(token: str) -> str:
 Provider = QoderProvider
 
 
+def _probe(token: str, bases: list[str]) -> tuple[str, str]:
+    """逐个域名试 token，返回 (可用域名, userId)。
+
+    token 只在签发它的那套服务上有效：国内版 token 打到国际域名会 401，
+    反之亦然。所以不能写死一个域名，也不能"猜错就当成功"。
+    """
+    for base in bases:
+        try:
+            c = QoderClient(token, base=base, min_interval=0)
+            r = c.usage()
+            c.close()
+        except Exception:
+            continue
+        if r.ok:
+            return base, uid_of(r.data)
+        if not r.token_invalid:
+            # 域名能通、只是暂时出错（5xx / 网络），别再换域名了
+            return base, ""
+    return "", ""
+
+
 def prepare_import(cred) -> None:
     """token 留空时自动读本机 Qoder 客户端登录态；仍拿不到就要求手动填。
 
-    uid / 昵称优先取与 token 严格对应的真实值：
-    - uid：用 token 调 usage 接口拿 qoderUsage.userId（本机登录态里也有 user.id）
-    - 昵称：本机客户端读到的 token 才可信地对应 user.name；粘贴的 token
-      不知道是哪个账号的，昵称留空让用户在导入框里填备注
+    域名处理：Qoder 国内版（openapi.qoder.com.cn）和国际版（openapi.qoder.sh）
+    是两套独立服务，token 不通用。导入时按「账号里记的 → 本机客户端目录 →
+    国内 → 国际」依次探测，命中哪个就把域名写进 cred.extra["base"]，
+    任务执行时用它发请求。两个域名都判 token 失效才报错，不会存一个用不上的账号。
     """
-    local_name = local_uid = ""
+    local_name = local_uid = local_base = ""
     if not cred.token:
         from communities.qoder.local_auth import read_desktop_token
         token, info = read_desktop_token()
         if token:
             cred.token = token
             cred.extra["token_source"] = "本机 Qoder 客户端"
+            local_base = str(info.get("base") or "")
             if info.get("expiresAt"):
                 cred.extra["token_expires"] = str(info["expiresAt"])
             local_name = str(info.get("user_name") or "")
@@ -196,16 +220,19 @@ def prepare_import(cred) -> None:
             "没有读到 Qoder 登录态。请先打开并登录 Qoder 客户端，或手动粘贴 token：\n"
             "  · 桌面端登录态里的设备令牌以 dt- 开头\n"
             "  · 抓包时取请求头 Authorization 里 Bearer 后面那段")
-    # 真实 userId（跨 token 刷新稳定）：优先调 usage 接口，接口失败退回本机登录态
-    uid = ""
-    try:
-        c = QoderClient(cred.token)
-        r = c.usage()
-        c.close()
-        if r.ok:
-            uid = uid_of(r.data)
-    except Exception:
-        pass
+
+    bases: list[str] = []
+    for b in ((cred.extra or {}).get("base"), local_base, BASE_CN, BASE_INTL):
+        if b and b not in bases:
+            bases.append(b)
+    base, uid = _probe(cred.token, bases)
+    if not base:
+        raise ValueError(
+            "这个 Qoder token 已失效（国内版 openapi.qoder.com.cn 和国际版 "
+            "openapi.qoder.sh 都试过了）。\n请打开 Qoder 客户端重新登录后再获取一次；"
+            "抓包时用最新的请求，旧包里的 token 可能已经轮换。")
+    cred.extra["base"] = base
+    cred.extra["domain"] = "国内版" if base == BASE_CN else "国际版"
     if not uid:
         uid = local_uid
     cred.uid = uid or uid_from_token(cred.token)
