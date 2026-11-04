@@ -9,6 +9,50 @@ from core.settings import settings
 from core.storage import Storage
 
 
+class CheckUpdateWorker(QThread):
+    """检查更新：匿名读一次 GitHub Releases，不携带任何本地数据。"""
+    ok = Signal(str)             # 最新版本号（v 前缀去掉）
+    up_to_date = Signal()        # 已是最新
+    fail = Signal(str)           # 网络等原因失败
+
+    def __init__(self, repo_url: str, parent=None):
+        super().__init__(parent)
+        self.repo_url = repo_url.rstrip("/")
+
+    def run(self) -> None:
+        try:
+            import httpx
+            # repo_url 形如 https://github.com/<owner>/<repo>
+            api = self.repo_url.replace("https://github.com",
+                                        "https://api.github.com/repos") + "/releases/latest"
+            r = httpx.get(api, timeout=6,
+                          headers={"Accept": "application/vnd.github+json",
+                                   "User-Agent": "SignRover-UpdateCheck"})
+            if r.status_code == 404:
+                self.fail.emit("仓库还没有发布任何 Release")
+                return
+            r.raise_for_status()
+            tag = (r.json().get("tag_name") or "").lstrip("vV")
+            if not tag:
+                self.fail.emit("Release 数据格式异常")
+                return
+            from core.version import VERSION
+            if _version_tuple(tag) > _version_tuple(VERSION):
+                self.ok.emit(tag)
+            else:
+                self.up_to_date.emit()
+        except Exception as e:                       # noqa: BLE001
+            self.fail.emit(f"{type(e).__name__}: {e}")
+
+
+def _version_tuple(v: str) -> tuple[int, ...]:
+    parts = []
+    for seg in v.split("."):
+        digits = "".join(ch for ch in seg if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts)
+
+
 class RefreshWorker(QThread):
     """拉取账号数据（任务进度 + 社区货币 + 角色）。"""
     ok = Signal(object)          # AccountSnapshot / KuroSnapshot

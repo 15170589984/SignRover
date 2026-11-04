@@ -1344,6 +1344,47 @@ class SettingsPage(QWidget):
             "数据库文件会小一些，明细页也更轻快。"))
         lay.addWidget(card2)
 
+        # ---- 关于 ----
+        from app.ui.about_texts import ABOUT_TEXTS, REPO_URL
+        from app.workers import CheckUpdateWorker
+        from PySide6.QtCore import QThread
+        self._update_worker: QThread | None = None
+
+        card3 = Card(padding=18, spacing=12)
+        card3.body().addWidget(title("关于"))
+
+        ver_row = QHBoxLayout()
+        ver_row.setSpacing(10)
+        self.lb_version = muted(f"当前版本 v{APP_VERSION}")
+        ver_row.addWidget(self.lb_version)
+        self.btn_update = QPushButton("检查更新")
+        self.btn_update.clicked.connect(self._check_update)
+        ver_row.addWidget(self.btn_update)
+        ver_row.addStretch(1)
+        card3.body().addLayout(ver_row)
+
+        docs_row = QHBoxLayout()
+        docs_row.setSpacing(8)
+        for key in ("user_agreement", "privacy", "oss", "help", "changelog"):
+            b = QPushButton(ABOUT_TEXTS[key][0])
+            b.clicked.connect(lambda _=False, k=key: self._show_doc(k))
+            docs_row.addWidget(b)
+        docs_row.addStretch(1)
+        card3.body().addLayout(docs_row)
+
+        contact_row = QHBoxLayout()
+        contact_row.setSpacing(8)
+        for label in ("联系我们", "官方社区", "报告问题"):
+            b = QPushButton(label)
+            b.setEnabled(False)          # 入口先占位，联系方式确定后开放
+            b.setToolTip("即将开放")
+            contact_row.addWidget(b)
+        contact_row.addStretch(1)
+        card3.body().addLayout(contact_row)
+
+        card3.body().addWidget(hint(f"项目主页：{REPO_URL}"))
+        lay.addWidget(card3)
+
         lay.addStretch(1)
         self._refresh_data_info()
 
@@ -1383,3 +1424,57 @@ class SettingsPage(QWidget):
             QMessageBox.warning(self, "保存失败", f"写入设置文件失败：{e}")
             return
         QMessageBox.information(self, "已保存", "设置已保存，下次执行时生效。")
+
+    # ---------------- 关于 ----------------
+    def _show_doc(self, key: str) -> None:
+        """滚动文本窗：显示协议 / 声明 / 帮助 / 更新日志。"""
+        from PySide6.QtWidgets import QDialog, QScrollArea
+        from app.ui.about_texts import ABOUT_TEXTS
+        doc_title, text = ABOUT_TEXTS[key]
+        dlg = QDialog(self)
+        dlg.setWindowTitle(doc_title)
+        dlg.resize(620, 560)
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(16, 14, 16, 12)
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        body = QLabel(text)
+        body.setWordWrap(True)
+        body.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        body.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        area.setWidget(body)
+        v.addWidget(area, 1)
+        close = QPushButton("关闭")
+        close.setObjectName("Primary")
+        close.setCursor(Qt.PointingHandCursor)
+        close.clicked.connect(dlg.accept)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(close)
+        v.addLayout(row)
+        dlg.exec()
+
+    def _check_update(self) -> None:
+        """后台线程查一次 GitHub Releases，失败给友好提示，UI 不卡。"""
+        from app.ui.about_texts import REPO_URL
+        from app.workers import CheckUpdateWorker
+        if self._update_worker and self._update_worker.isRunning():
+            return
+        self.btn_update.setEnabled(False)
+        self.btn_update.setText("检查中…")
+        w = CheckUpdateWorker(REPO_URL)
+        w.ok.connect(lambda tag: QMessageBox.information(
+            self, "发现新版本",
+            f"最新版本 v{tag}，当前 v{APP_VERSION}。\n\n请到项目主页下载新版本安装包。"))
+        w.up_to_date.connect(lambda: QMessageBox.information(
+            self, "已是最新", f"当前 v{APP_VERSION} 已是最新版本。"))
+        w.fail.connect(lambda msg: QMessageBox.warning(
+            self, "检查失败",
+            f"暂时无法检查更新：{msg}\n\n可能是网络原因（GitHub 访问不稳定），"
+            f"可稍后再试，或直接到项目主页查看最新 Release。"))
+        def _done():
+            self.btn_update.setEnabled(True)
+            self.btn_update.setText("检查更新")
+        w.finished.connect(_done)
+        self._update_worker = w
+        w.start()
