@@ -120,11 +120,6 @@ class MainWindow(QMainWindow):
             self.nav_buttons.append(b)
         self.nav_buttons[0].setChecked(True)
         lay.addStretch(1)
-
-        foot = QLabel(f"v{APP_VERSION} · 本地运行")
-        foot.setObjectName("SideFoot")
-        foot.setAlignment(Qt.AlignCenter)
-        lay.addWidget(foot)
         return bar
 
     def go(self, idx: int) -> None:

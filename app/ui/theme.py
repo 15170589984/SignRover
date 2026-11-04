@@ -165,7 +165,6 @@ QLabel#NavSection {{
     color: {TEXT_MUTED}; font-size: 11px; font-weight: 600;
     padding: 0 20px;
 }}
-QLabel#SideFoot {{ color: {TEXT_MUTED}; font-size: 11px; }}
 
 QPushButton#Nav {{
     text-align: left;
