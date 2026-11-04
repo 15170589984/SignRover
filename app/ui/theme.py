@@ -346,21 +346,51 @@ QScrollBar::handle:horizontal:hover {{ background: #B9BFCA; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; border: none; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 
+/* ================= 页签（登录账号对话框） ================= */
+QTabWidget::pane {{
+    border: 1px solid {BORDER};
+    border-radius: 8px;
+    background: {SURFACE};
+    top: -1px;               /* 让选中页签的下划线和内容框连上 */
+}}
+QTabBar {{ background: transparent; }}
+QTabBar::tab {{
+    background: transparent;
+    color: {TEXT_SUB};
+    padding: 7px 18px 6px 18px;
+    margin-right: 4px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    font-size: 13px;
+}}
+QTabBar::tab:hover:!selected {{ color: {TEXT}; background: #F3F5F9; }}
+QTabBar::tab:selected {{
+    color: {ACCENT_HOVER};
+    border-bottom: 2px solid {ACCENT};
+    font-weight: 600;
+}}
+
 /* ================= 其它 ================= */
 QTextEdit {{
     background: {SUBTLE};
     border: 1px solid {BORDER};
     border-radius: 10px;
     padding: 8px;
-    color: #3A4252;
+    color: #242B38;
     font-family: "Cascadia Mono", "Consolas", "Menlo", monospace;
     font-size: 12px;
 }}
+/* 执行日志：浅灰底衬白卡片，字色加深一档，避免白底上发灰看不清 */
 QTextEdit#Log {{
-    background: transparent;
-    border: none;
-    border-radius: 0;
-    padding: 2px 14px 12px 14px;
+    background: #FBFCFD;
+    border: 1px solid {BORDER};
+    border-radius: 8px;
+    margin: 0 14px 14px 14px;
+    padding: 10px 12px;
+    color: #242B38;
+    font-size: 12.5px;
 }}
 QProgressBar {{
     border: none; background: #ECEEF3; border-radius: 3px;

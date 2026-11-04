@@ -12,9 +12,9 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFileDialog,
-                               QFormLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
-                               QLineEdit, QMainWindow, QMessageBox, QProgressBar, QPushButton,
-                               QSpinBox, QStackedWidget, QTableView, QTableWidget,
+                               QFormLayout, QFrame, QHBoxLayout, QHeaderView, QInputDialog,
+                               QLabel, QLineEdit, QMainWindow, QMessageBox, QProgressBar,
+                               QPushButton, QSpinBox, QStackedWidget, QTableView, QTableWidget,
                                QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget)
 
 from app.ui.theme import GOLD, GREEN, PRIMARY, RED, TEXT, TEXT_MUTED, TEXT_SUB
@@ -341,7 +341,8 @@ class DashboardPage(QWidget):
         head.addWidget(page_header("总览", "数据来自平台接口，可随时重新拉取"))
         head.addStretch(1)
         self.account_box = QComboBox()
-        self.account_box.setMinimumWidth(210)
+        # 固定宽度：切换账号时列表长短不一，宽度跟着跳很难看
+        self.account_box.setFixedWidth(250)
         self.account_box.currentIndexChanged.connect(self._on_account_change)
         head.addWidget(self.account_box)
         btn_refresh = ghost_button("刷新")
@@ -363,7 +364,6 @@ class DashboardPage(QWidget):
         for c in (self.card_coin, self.card_today, self.card_can, self.card_task):
             c.setMinimumHeight(94)
             stats.addWidget(c, 1)
-        lay.addLayout(stats)
 
         self.task_card = Card(padding=18, spacing=4)
         self.task_card_title = title("每日任务")
@@ -372,27 +372,99 @@ class DashboardPage(QWidget):
         self.task_list_box = QVBoxLayout()
         self.task_list_box.setSpacing(0)
         self.task_card.body().addLayout(self.task_list_box)
-        lay.addWidget(self.task_card)
 
         self.roles_card = Card(padding=18, spacing=6)
         self.roles_card.body().addWidget(title("绑定角色"))
         self.roles_box = QVBoxLayout()
         self.roles_box.setSpacing(4)
         self.roles_card.body().addLayout(self.roles_box)
-        lay.addWidget(self.roles_card)
-        lay.addStretch(1)
+
+        # 内容区 + 骨架屏做成可切换的两页：切换账号拉数据期间显示骨架，
+        # 不能让上一份账号的数据还挂在界面上造成误读。
+        content = QWidget()
+        cl = QVBoxLayout(content)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(14)
+        cl.addLayout(stats)
+        cl.addWidget(self.task_card)
+        cl.addWidget(self.roles_card)
+        cl.addStretch(1)
+        self._skeleton = self._build_skeleton()
+        self.stack = QStackedWidget()
+        self.stack.addWidget(content)          # index 0：真实数据
+        self.stack.addWidget(self._skeleton)   # index 1：骨架屏
+        lay.addWidget(self.stack, 1)
 
         self.empty_hint = muted("还没有账号。到「账号」页点击「登录账号」即可添加。")
         self.empty_hint.setAlignment(Qt.AlignCenter)
         lay.addWidget(self.empty_hint)
         self.empty_hint.hide()
 
+        # 骨架屏的呼吸动画：让灰条明暗交替，明确传达「在加载」
+        self._skel_phase = 0
+        self._skel_timer = QTimer(self)
+        self._skel_timer.setInterval(600)
+        self._skel_timer.timeout.connect(self._pulse_skeleton)
+
+    def _build_skeleton(self) -> QWidget:
+        """与真实内容同构的灰色占位：4 张统计卡 + 任务条 + 角色条。"""
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(14)
+        self._skel_bars: list[QFrame] = []
+
+        def bar(parent_box, h: int, w: int | None = None) -> None:
+            f = QFrame()
+            f.setFixedHeight(h)
+            if w:
+                f.setFixedWidth(w)
+            f.setStyleSheet("background:#EDF0F5;border:none;border-radius:5px;")
+            self._skel_bars.append(f)
+            parent_box.addWidget(f)
+
+        stats = QHBoxLayout()
+        stats.setSpacing(12)
+        for _ in range(4):
+            card = QFrame()
+            card.setObjectName("StatCard")
+            card.setFixedHeight(94)
+            inner = QVBoxLayout(card)
+            inner.setContentsMargins(16, 14, 16, 14)
+            inner.setSpacing(8)
+            bar(inner, 11, 64)
+            bar(inner, 24, 96)
+            stats.addWidget(card, 1)
+        v.addLayout(stats)
+
+        task_card = Card(padding=18, spacing=14)
+        task_card.body().addWidget(title("每日任务"))
+        for _ in range(4):
+            bar(task_card.body(), 28)
+        v.addWidget(task_card)
+
+        roles_card = Card(padding=18, spacing=10)
+        roles_card.body().addWidget(title("绑定角色"))
+        bar(roles_card.body(), 18, 330)
+        roles_card.body().addStretch(1)
+        v.addWidget(roles_card)
+        v.addStretch(1)
+        page.hide()
+        return page
+
+    def _pulse_skeleton(self) -> None:
+        self._skel_phase = 1 - self._skel_phase
+        color = "#E4E8F0" if self._skel_phase else "#F0F2F7"
+        style = f"background:{color};border:none;border-radius:5px;"
+        for b in self._skel_bars:
+            b.setStyleSheet(style)
+
     def set_accounts(self, accounts: list[Credential], current: Credential | None) -> None:
         self.account_box.blockSignals(True)
         self.account_box.clear()
         for a in accounts:
-            self.account_box.addItem(
-                f"{a.community_name} · {a.display_name} ({a.uid})", a.key)
+            # 与任务页下拉保持一致：只显示「平台 · 昵称」，UID 太长放不下也没人看
+            self.account_box.addItem(f"{a.community_name} · {a.display_name}", a.key)
         if current:
             i = self.account_box.findData(current.key)
             if i >= 0:
@@ -415,14 +487,23 @@ class DashboardPage(QWidget):
         return self.win.current.currency if self.win.current else "积分"
 
     def render_empty(self) -> None:
+        self._skel_timer.stop()
+        self.stack.setCurrentIndex(0)
         self.empty_hint.show()
 
     def set_loading(self, loading: bool) -> None:
+        """加载中切到骨架屏，收尾切回数据页。"""
         if loading:
-            self.card_coin.set_value("…", self.card_coin.sub_label.text())
+            self.empty_hint.hide()
+            self.stack.setCurrentWidget(self._skeleton)
+            self._skel_timer.start()
+        else:
+            self._skel_timer.stop()
+            self.stack.setCurrentIndex(0)
 
     def render(self, snap) -> None:
         from core.communities import get as community_of
+        self.set_loading(False)
         self.empty_hint.hide()
         coin = snap.coin
         cur = self.currency
@@ -502,8 +583,8 @@ class AccountsPage(QWidget):
         lay.addLayout(head)
 
         table_card = Card(padding=0, spacing=0)
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["平台 · 昵称", "UID", "余额", "最近更新", "状态"])
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["平台", "昵称", "UID", "余额", "最近更新", "状态"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(38)
@@ -515,10 +596,6 @@ class AccountsPage(QWidget):
         self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.table.horizontalHeader().setHighlightSections(False)
         self.table.cellDoubleClicked.connect(self._on_row_double)
-        for j in (2, 3, 4):
-            it = self.table.horizontalHeaderItem(j)
-            if it is not None:
-                it.setTextAlignment(Qt.AlignCenter)
         table_card.body().addWidget(self.table)
         lay.addWidget(table_card, 1)
 
@@ -536,12 +613,11 @@ class AccountsPage(QWidget):
         for i, a in enumerate(accounts):
             coin = self.win.storage.latest_coin(a.key)
             ok = bool(a.token) if community_of(a.community).auth == "token" else bool(a.stoken)
-            name = a.community_name
             nick = a.display_name
             if a.key == cur_key:
                 nick = "● " + nick        # 标记当前账号
             values = [
-                f"{name} · {nick}", a.uid,
+                a.community_name, nick, a.uid,
                 f"{coin['total']} {a.currency}" if coin else "-",
                 datetime.fromtimestamp(coin["created_at"]).strftime("%m-%d %H:%M") if coin else "-",
                 "已授权" if ok else "凭证缺失",
@@ -550,9 +626,7 @@ class AccountsPage(QWidget):
                 item = QTableWidgetItem(v)
                 if j == 0:
                     item.setData(Qt.UserRole, (a.aid, a.community))   # 删除 / 切换用
-                if j in (2, 3, 4):
-                    item.setTextAlignment(Qt.AlignCenter)
-                if j == 4:
+                if j == 5:
                     item.setForeground(QColor(GREEN if ok else RED))
                 self.table.setItem(i, j, item)
 
@@ -593,7 +667,9 @@ class AccountsPage(QWidget):
         if not isinstance(ref, (tuple, list)) or len(ref) < 2:
             return
         aid, community = ref[0], ref[1]
-        label = item.text() if item else community
+        nick_item = self.table.item(r, 1)
+        label = (f"{item.text()} · {nick_item.text()}"
+                 if item and nick_item else (item.text() if item else community))
         if QMessageBox.question(self, "确认",
                                 f"删除 {label} 账号？") == QMessageBox.Yes:
             self.win.storage.delete_account(aid, community)
@@ -622,7 +698,8 @@ class TasksPage(QWidget):
         head.addStretch(1)
         head.addWidget(field_label("平台账号"))
         self.cb_account = QComboBox()
-        self.cb_account.setMinimumWidth(220)
+        # 固定宽度：与总览页一致，账号名长短不一时宽度不能跟着跳
+        self.cb_account.setFixedWidth(250)
         self.cb_account.currentIndexChanged.connect(self._on_pick)
         head.addWidget(self.cb_account)
         self.lb_who = muted("")
@@ -775,17 +852,17 @@ class TasksPage(QWidget):
 
     # ---------- 按当前账号切换面板 ----------
     def set_accounts(self, accounts: list[Credential], current: Credential | None) -> None:
-        """账号列表变化时同步下拉；用户已选「全部平台」就保持不动。"""
+        """账号列表变化时同步下拉；「全部平台」固定排在最上面第一个。"""
         self.accounts = list(accounts)
         keep = self.cb_account.currentData() if self.cb_account.count() else None
         self._filling = True
         self.cb_account.clear()
-        for a in accounts:
-            self.cb_account.addItem(f"{a.community_name} · {a.display_name}", a.key)
         if len(accounts) > 1:
             self.cb_account.addItem("全部平台（依次执行）", self.ALL)
+        for a in accounts:
+            self.cb_account.addItem(f"{a.community_name} · {a.display_name}", a.key)
         target = keep if keep and self.cb_account.findData(keep) >= 0 else (
-            current.key if current else "")
+            current.key if current else self.ALL)
         idx = self.cb_account.findData(target) if target else -1
         self.cb_account.setCurrentIndex(idx if idx >= 0 else 0)
         self._filling = False
@@ -871,22 +948,23 @@ class TasksPage(QWidget):
         self.lb_progress.setText("")
 
     def append_log(self, level: str, msg: str) -> None:
-        # 配色与「明细」页（runs_model）完全一致：成功绿 / 失败红 / 跳过灰 / 积分金，
-        # 之前默认字色 #3A4560、时间戳 #A8AEB9 在浅色主题白底上发灰看不清，已全部调深。
+        # 配色与「明细」页（runs_model）一致：成功绿 / 失败红 / 跳过灰 / 积分金。
+        # 正文与时间戳都比常规 muted 再深一档——日志区字小、还是等宽字体，
+        # 之前 #4C5464 / #8A93A6 在浅底上整体发灰，用户反馈看不清。
         color = {
-            "success": "#12A150",
-            "error": "#D9363E",
-            "skip": "#8A93A6",
-            "info": "#4C5464",
-        }.get(level, "#4C5464")
+            "success": "#0B8A43",
+            "error": "#C62830",
+            "skip": "#6E7686",
+            "info": "#242B38",
+        }.get(level, "#242B38")
         ts = datetime.now().strftime("%H:%M:%S")
         # 接口返回的错误里常带 < > &，不转义会被当成富文本吃掉
         safe = html.escape(str(msg))
-        # 「+数字 货币」用金色高亮，让积分一眼可见（与明细页点数同色 #B7791F）
+        # 「+数字 货币」用金色高亮，让积分一眼可见（与明细页点数同色）
         safe = re.sub(r"(\+[\d,]+[ \u4e00-\u9fffA-Za-z]*)",
-                     r"<span style='color:#B7791F'>\1</span>", safe)
+                     r"<span style='color:#9A6A12;font-weight:600'>\1</span>", safe)
         self._log_buf.append(
-            f"<span style='color:#8A93A6'>[{ts}]</span>&nbsp;&nbsp;"
+            f"<span style='color:#78808F'>[{ts}]</span>&nbsp;&nbsp;"
             f"<span style='color:{color}'>{safe}</span>")
         # 每行都 append 会触发一次富文本重排，跑几十步时界面就发涩；
         # 攒一小批一次性插进去，滚动和点击都跟手
