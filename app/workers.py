@@ -14,6 +14,7 @@ class CheckUpdateWorker(QThread):
     ok = Signal(str)             # 最新版本号（v 前缀去掉）
     up_to_date = Signal()        # 已是最新
     fail = Signal(str)           # 网络等原因失败
+    release = Signal(str, str)   # (版本号, 安装包下载地址)
 
     def __init__(self, repo_url: str, parent=None):
         super().__init__(parent)
@@ -21,28 +22,64 @@ class CheckUpdateWorker(QThread):
 
     def run(self) -> None:
         try:
-            import httpx
-            # repo_url 形如 https://github.com/<owner>/<repo>
-            api = self.repo_url.replace("https://github.com",
-                                        "https://api.github.com/repos") + "/releases/latest"
-            r = httpx.get(api, timeout=6,
-                          headers={"Accept": "application/vnd.github+json",
-                                   "User-Agent": "SignRover-UpdateCheck"})
-            if r.status_code == 404:
-                self.fail.emit("仓库还没有发布任何 Release")
-                return
-            r.raise_for_status()
-            tag = (r.json().get("tag_name") or "").lstrip("vV")
-            if not tag:
-                self.fail.emit("Release 数据格式异常")
-                return
+            tag, url, _html = fetch_latest_release(self.repo_url)
             from core.version import VERSION
             if _version_tuple(tag) > _version_tuple(VERSION):
+                self.release.emit(tag, url)
                 self.ok.emit(tag)
             else:
                 self.up_to_date.emit()
         except Exception as e:                       # noqa: BLE001
             self.fail.emit(f"{type(e).__name__}: {e}")
+
+
+class ReleaseInfoWorker(QThread):
+    """给「项目主页」按钮用：拿最新 Release 的安装包直链，点一下就开始下载。"""
+    info = Signal(str, str)      # (版本号, 下载地址)
+    fail = Signal(str)
+
+    def __init__(self, repo_url: str, parent=None):
+        super().__init__(parent)
+        self.repo_url = repo_url.rstrip("/")
+
+    def run(self) -> None:
+        try:
+            tag, url, _html = fetch_latest_release(self.repo_url)
+            self.info.emit(tag, url)
+        except Exception as e:                       # noqa: BLE001
+            self.fail.emit(f"{type(e).__name__}: {e}")
+
+
+def fetch_latest_release(repo_url: str) -> tuple[str, str, str]:
+    """读 GitHub 最新 Release，返回 (版本号, 下载地址, 发布页地址)。
+
+    下载地址优先取安装包附件（.exe，其次 .msi/.zip），没有附件就退回发布页。
+    """
+    import httpx
+    api = repo_url.replace("https://github.com",
+                           "https://api.github.com/repos") + "/releases/latest"
+    r = httpx.get(api, timeout=8,
+                  headers={"Accept": "application/vnd.github+json",
+                           "User-Agent": "SignRover-UpdateCheck"})
+    if r.status_code == 404:
+        raise RuntimeError("还没有发布任何 Release")
+    r.raise_for_status()
+    data = r.json()
+    tag = (data.get("tag_name") or "").lstrip("vV")
+    if not tag:
+        raise RuntimeError("Release 数据格式异常")
+    html = data.get("html_url") or f"{repo_url}/releases/latest"
+    assets = data.get("assets") or []
+    url = ""
+    for suffix in (".exe", ".msi", ".zip"):
+        for a in assets:
+            name = str(a.get("name") or "").lower()
+            if name.endswith(suffix) and a.get("browser_download_url"):
+                url = a["browser_download_url"]
+                break
+        if url:
+            break
+    return tag, (url or html), html
 
 
 def _version_tuple(v: str) -> tuple[int, ...]:
@@ -268,7 +305,7 @@ class BatchRunWorker(QThread):
             if self.isInterruptionRequested():
                 stopped = True
                 break
-            head = f"{cred.community_name} · {cred.nickname or cred.uid}"
+            head = f"{cred.community_name} · {cred.display_name}"
             self.log.emit("info", f"━━━ [{idx}/{n}] {head} ━━━")
             try:
                 with provider_for(cred, self.storage) as p:

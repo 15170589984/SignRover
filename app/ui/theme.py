@@ -230,6 +230,17 @@ QPushButton#Danger:hover {{
     background: #FDF2F2; border-color: #F3C9C9; color: {RED};
 }}
 
+/* 任务页执行中的「停止」：实心红，和蓝色「开始执行」明显区分 */
+QPushButton#DangerSolid {{
+    background: {RED}; border: 1px solid {RED}; color: #FFFFFF;
+    font-weight: 600; padding: 0 18px;
+}}
+QPushButton#DangerSolid:hover {{ background: #B2202A; border-color: #B2202A; }}
+QPushButton#DangerSolid:pressed {{ background: #9B1B24; }}
+QPushButton#DangerSolid:disabled {{
+    background: #EFC9CC; border-color: #EFC9CC; color: #FFFFFF;
+}}
+
 QPushButton#Pager {{
     min-height: 26px; padding: 0 10px; border-radius: 6px;
     font-size: 12px; color: #525A68; background: {SURFACE};

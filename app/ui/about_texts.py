@@ -7,7 +7,8 @@ from __future__ import annotations
 
 from core.version import VERSION
 
-REPO_URL = "https://github.com/15170589984/signrover"
+REPO_URL = "https://github.com/15170589984/SignRover"
+RELEASES_URL = f"{REPO_URL}/releases/latest"
 
 USER_AGREEMENT = f"""社区签到助手 用户协议
 

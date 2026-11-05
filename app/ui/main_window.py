@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTime, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFileDialog,
                                QFormLayout, QFrame, QHBoxLayout, QHeaderView, QInputDialog,
@@ -23,6 +23,7 @@ from app.ui.widgets import (Card, StatCard, dot, field_label, ghost_button, hint
 from app.workers import RefreshWorker, RunWorker
 from communities.mihoyo.boards import BOARDS, SIGNABLE
 from core.models import Credential, TaskStatus
+from core.settings import settings
 from core.storage import Storage
 from core.version import VERSION as APP_VERSION
 
@@ -43,10 +44,15 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("社区签到助手")
         self.resize(1180, 760)
+        # 定时执行巡检：20 秒看一次，到点就开跑（分钟级精度足够，不必太密）
+        self._sched_timer = QTimer(self)
+        self._sched_timer.setInterval(20_000)
+        self._sched_timer.timeout.connect(self._check_schedule)
         self._build()
         self._load_accounts()
         if self.current:
             QTimer.singleShot(300, self.refresh_data)
+        QTimer.singleShot(1200, self.reload_schedule)
 
     # ---------------- 布局 ----------------
     def _build(self) -> None:
@@ -264,10 +270,54 @@ class MainWindow(QMainWindow):
     def stop_tasks(self) -> None:
         if self._worker and self._worker.isRunning():
             self._worker.requestInterruption()
-            self.page_tasks.btn_stop.setEnabled(False)
-            self.page_tasks.btn_stop.setText("停止中…")
+            self.page_tasks.btn_run.setEnabled(False)
+            self.page_tasks.btn_run.setText("停止中…")
             self.page_tasks.append_log("skip", "已请求停止，等当前步骤跑完就收尾")
             self.statusBar().showMessage("正在停止…")
+
+    # ---------------- 定时执行 ----------------
+    def reload_schedule(self) -> None:
+        """配置变了：重算提示文案，必要时启动/停掉巡检定时器。"""
+        self.page_tasks.refresh_schedule_ui()
+        enabled = bool(settings().schedule.get("enabled"))
+        if enabled and not self._sched_timer.isActive():
+            self._sched_timer.start()
+        elif not enabled and self._sched_timer.isActive():
+            self._sched_timer.stop()
+
+    def _check_schedule(self) -> None:
+        from core.schedule import should_fire
+        s = settings()
+        sched = s.schedule
+        if not sched.get("enabled"):
+            self.page_tasks.refresh_schedule_ui()
+            return
+        now = datetime.now()
+        if not should_fire(now, sched):
+            self.page_tasks.refresh_schedule_ui()
+            return
+        # 先记账再执行：即使这轮失败也不该在同一天反复重试
+        s.set_schedule(last_run=now.strftime("%Y-%m-%d"))
+        try:
+            s.save()
+        except OSError:
+            pass
+        if self._worker and self._worker.isRunning():
+            self.page_tasks.append_log("skip", "定时任务到点，但已有任务在执行，本次跳过")
+            self.statusBar().showMessage("定时任务：已有任务在执行，本次跳过")
+            self.page_tasks.refresh_schedule_ui()
+            return
+        jobs = self.page_tasks.jobs_for_scope(sched.get("scope"))
+        if not jobs:
+            self.page_tasks.append_log("error", "定时任务没有可执行的账号，已取消")
+            self.page_tasks.refresh_schedule_ui()
+            return
+        self.page_tasks._save_checks()
+        self.page_tasks.append_log(
+            "info", f"⏰ 定时任务触发（{now.strftime('%H:%M')}），共 {len(jobs)} 个账号")
+        self.statusBar().showMessage(f"定时任务开始执行（{len(jobs)} 个账号）")
+        self.run_all_tasks(jobs)
+        self.page_tasks.refresh_schedule_ui()
 
     # ---------------- 退出 ----------------
     def closeEvent(self, event) -> None:      # noqa: N802
@@ -719,16 +769,18 @@ class TasksPage(QWidget):
         self.lb_who = muted("")
         head.addWidget(self.lb_who)
         head.addSpacing(6)
+        # 一个按钮两态：没跑时是「开始执行」，跑起来当场变「停止」。
+        # 之前是两个按钮互相显隐，用户看到的还是「开始执行」旧样式，容易以为没反应。
         self.btn_run = QPushButton("开始执行")
         self.btn_run.setObjectName("Primary")
         self.btn_run.setCursor(Qt.PointingHandCursor)
-        self.btn_run.clicked.connect(self.start)
+        self.btn_run.clicked.connect(self._on_run_click)
         head.addWidget(self.btn_run)
-        self.btn_stop = QPushButton("停止")
-        self.btn_stop.clicked.connect(self.win.stop_tasks)
-        self.btn_stop.hide()
-        head.addWidget(self.btn_stop)
+        self._running = False
         lay.addLayout(head)
+
+        # ---- 定时执行 ----
+        lay.addWidget(self._schedule_card())
 
         card = Card(padding=18, spacing=10)
         card.body().addWidget(title("选择要执行的任务"))
@@ -831,6 +883,110 @@ class TasksPage(QWidget):
 
         self._restore_checks()
 
+    # ---------- 定时执行 ----------
+    def _schedule_card(self) -> QWidget:
+        """任务页顶部的定时执行条：到点自动跑当前选择（或全部平台）。"""
+        from PySide6.QtWidgets import QTimeEdit
+        from core.settings import settings as load_settings
+
+        card = Card(padding=16, spacing=8)
+        card.body().addWidget(title("定时执行"))
+        s = load_settings().schedule
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        self.cb_sched = QCheckBox("定时自动执行")
+        self.cb_sched.setChecked(bool(s.get("enabled")))
+        row.addWidget(self.cb_sched)
+
+        self.cb_sched_days = QComboBox()
+        self.cb_sched_days.addItem("每天", "daily")
+        self.cb_sched_days.addItem("仅工作日", "weekday")
+        self.cb_sched_days.setCurrentIndex(
+            max(0, self.cb_sched_days.findData(s.get("days") or "daily")))
+        row.addWidget(self.cb_sched_days)
+
+        self.te_sched = QTimeEdit()
+        self.te_sched.setDisplayFormat("HH:mm")
+        self.te_sched.setFixedWidth(90)
+        hh, mm = (s.get("time") or "08:00").split(":")
+        self.te_sched.setTime(QTime(int(hh), int(mm)))
+        row.addWidget(self.te_sched)
+
+        row.addWidget(field_label("自动执行"))
+        self.cb_sched_scope = QComboBox()
+        self.cb_sched_scope.setFixedWidth(230)
+        self.cb_sched_scope.addItem("全部平台（依次执行）", self.ALL)
+        row.addWidget(self.cb_sched_scope)
+
+        row.addStretch(1)
+        self.lb_sched_next = muted("")
+        row.addWidget(self.lb_sched_next)
+        card.body().addLayout(row)
+
+        card.body().addWidget(hint(
+            "到点后自动开始，正在执行其它任务时会跳过这一次。程序要开着才会触发，"
+            "可在「设置 → 运行环境」里打开开机自启；错过时间的话，下次启动会补跑一次。"))
+
+        self.cb_sched.toggled.connect(self._on_sched_changed)
+        self.cb_sched_days.currentIndexChanged.connect(self._on_sched_changed)
+        self.te_sched.timeChanged.connect(self._on_sched_changed)
+        self.cb_sched_scope.currentIndexChanged.connect(self._on_sched_changed)
+        self._sync_sched_enabled()
+        return card
+
+    def _sync_sched_enabled(self) -> None:
+        on = self.cb_sched.isChecked()
+        for w in (self.cb_sched_days, self.te_sched, self.cb_sched_scope):
+            w.setEnabled(on)
+
+    def _on_sched_changed(self) -> None:
+        """任何一项变动都立即写盘，用户不需要再去点保存。"""
+        from core.settings import settings as load_settings
+        from core.schedule import should_fire
+        self._sync_sched_enabled()
+        s = load_settings()
+        sched = s.set_schedule(
+            enabled=self.cb_sched.isChecked(),
+            days=self.cb_sched_days.currentData() or "daily",
+            time=self.te_sched.time().toString("HH:mm"),
+            scope=self.cb_sched_scope.currentData() or self.ALL,
+        )
+        # 刚打开时如果今天这个点已经过了，不立刻补跑（避免一勾选就跳起来执行），
+        # 把今天记为已跑，明天开始生效
+        if sched["enabled"] and should_fire(datetime.now(), {**sched, "last_run": ""}):
+            s.set_schedule(last_run=datetime.now().strftime("%Y-%m-%d"))
+        try:
+            s.save()
+        except OSError:
+            pass
+        self.win.reload_schedule()
+
+    def refresh_schedule_ui(self) -> None:
+        """外部改了配置（或跨天）时刷新提示文案。"""
+        from core.settings import settings as load_settings
+        from core.schedule import next_run
+        s = load_settings().schedule
+        self.cb_sched.blockSignals(True)
+        self.cb_sched.setChecked(bool(s.get("enabled")))
+        self.cb_sched.blockSignals(False)
+        self._sync_sched_enabled()
+        if not s.get("enabled"):
+            self.lb_sched_next.setText("未启用")
+            return
+        nxt = next_run(datetime.now(), s)
+        self.lb_sched_next.setText(
+            f"下次：{nxt.strftime('%m-%d %H:%M')}" if nxt else "下次：待定")
+
+    def jobs_for_scope(self, scope: str) -> list[tuple[Credential, dict]]:
+        """定时执行实际要跑的账号列表：全部平台，或指定账号。"""
+        if not scope or scope == self.ALL:
+            return [(a, self._options_for(a.community)) for a in self.accounts]
+        for a in self.accounts:
+            if a.key == scope:
+                return [(a, self._options_for(a.community))]
+        return []
+
     # ---------- 勾选状态记忆 ----------
     def _check_map(self, community: str) -> list[tuple[str, QCheckBox]]:
         return self._task_cbs.get(community, [])
@@ -879,10 +1035,26 @@ class TasksPage(QWidget):
             current.key if current else self.ALL)
         idx = self.cb_account.findData(target) if target else -1
         self.cb_account.setCurrentIndex(idx if idx >= 0 else 0)
+        self._fill_sched_scope()
         self._filling = False
         if current:
             self.community = (current.community or "mihoyo")
         self._apply_view(current)
+
+    def _fill_sched_scope(self) -> None:
+        """定时任务的范围下拉：全部平台 + 每个账号，保留已选值。"""
+        from core.settings import settings as load_settings
+        want = load_settings().schedule.get("scope") or self.ALL
+        cur = self.cb_sched_scope.currentData()
+        want = cur or want
+        self.cb_sched_scope.blockSignals(True)
+        self.cb_sched_scope.clear()
+        self.cb_sched_scope.addItem("全部平台（依次执行）", self.ALL)
+        for a in self.accounts:
+            self.cb_sched_scope.addItem(f"{a.community_name} · {a.display_name}", a.key)
+        i = self.cb_sched_scope.findData(want)
+        self.cb_sched_scope.setCurrentIndex(i if i >= 0 else 0)
+        self.cb_sched_scope.blockSignals(False)
 
     def set_account(self, cred) -> None:
         if cred:
@@ -946,6 +1118,12 @@ class TasksPage(QWidget):
             options["gids"] = [gid] if gid else list(meta.default_gids)
         return options
 
+    def _on_run_click(self) -> None:
+        if self._running:
+            self.win.stop_tasks()
+        else:
+            self.start()
+
     def start(self) -> None:
         self._save_checks()
         if self._all_mode():
@@ -1004,10 +1182,14 @@ class TasksPage(QWidget):
         self.lb_progress.setText(f"{done} / {max(total, 1)}")
 
     def set_running(self, running: bool) -> None:
-        self.btn_run.setVisible(not running)
-        self.btn_stop.setVisible(running)
-        self.btn_stop.setEnabled(running)
-        self.btn_stop.setText("停止" if running else "停止中…")
+        self._running = running
+        # 同一个按钮换文案换样式：执行中就是「停止」，跑完自己变回「开始执行」
+        self.btn_run.setText("停止" if running else "开始执行")
+        self.btn_run.setObjectName("DangerSolid" if running else "Primary")
+        self.btn_run.setEnabled(True)
+        # objectName 变了要重新套一遍样式表，否则颜色不跟着换
+        self.btn_run.style().unpolish(self.btn_run)
+        self.btn_run.style().polish(self.btn_run)
         self.prog_wrap.setVisible(running)
         if not running:
             self.lb_progress.setText("")
@@ -1303,10 +1485,20 @@ class SettingsPage(QWidget):
         self.sp_interval.setFixedWidth(110)
         form.addRow(field_label("请求间隔"), self.sp_interval)
         card.body().addLayout(form)
+
+        # 开机自启：勾了立即写注册表，不用再点保存
+        self.cb_boot = QCheckBox("开机自动启动（登录 Windows 后自动运行本程序）")
+        card.body().addWidget(self.cb_boot)
+        self.cb_boot.toggled.connect(self._on_boot_toggled)
         card.body().addWidget(hint(
             "请求间隔越大越安全，米游社对高频请求有风控，建议不低于 2 秒。"
             "adb 路径留空即自动查找：优先用程序目录 bin 下自带的 adb，其次系统 PATH，"
             "再其次常见模拟器安装位置。"))
+
+        from core import autostart
+        self.cb_boot.blockSignals(True)
+        self.cb_boot.setChecked(autostart.is_enabled())
+        self.cb_boot.blockSignals(False)
         save_row = QHBoxLayout()
         b = QPushButton("保存设置")
         b.setObjectName("Primary")
@@ -1377,11 +1569,40 @@ class SettingsPage(QWidget):
         contact_row.addStretch(1)
         card3.body().addLayout(contact_row)
 
-        card3.body().addWidget(hint(f"项目主页：{REPO_URL}"))
+        link_row = QHBoxLayout()
+        link_row.setSpacing(8)
+        self.btn_home = QPushButton("项目主页（GitHub Releases）")
+        self.btn_home.setCursor(Qt.PointingHandCursor)
+        self.btn_home.setToolTip("打开最新版本的下载地址（有安装包附件时直接开始下载）")
+        self.btn_home.clicked.connect(self._open_home)
+        link_row.addWidget(self.btn_home)
+        link_row.addStretch(1)
+        card3.body().addLayout(link_row)
+        card3.body().addWidget(hint(
+            f"项目主页：{REPO_URL}\n"
+            "点「项目主页」会打开 GitHub 上最新 Release 的安装包；"
+            "也可以点旁边的「检查更新」先看有没有新版本。"))
         lay.addWidget(card3)
 
         lay.addStretch(1)
         self._refresh_data_info()
+
+    def _on_boot_toggled(self, on: bool) -> None:
+        """勾选即生效：写 / 删当前用户的 Run 注册表项。"""
+        from core import autostart
+        ok = autostart.set_enabled(on)
+        if not ok:
+            self.cb_boot.blockSignals(True)
+            self.cb_boot.setChecked(not on)
+            self.cb_boot.blockSignals(False)
+            QMessageBox.warning(
+                self, "设置失败",
+                "没能写入开机自启项（注册表被安全软件拦截？）。\n"
+                "可以稍后再试，或用「任务管理器 → 启动应用」手动管理。")
+            return
+        self.cb_boot.setText("开机自动启动（登录 Windows 后自动运行本程序）")
+        self.win.statusBar().showMessage(
+            "已开启开机自启" if on else "已关闭开机自启")
 
     def _refresh_data_info(self) -> None:
         try:
@@ -1421,6 +1642,41 @@ class SettingsPage(QWidget):
         QMessageBox.information(self, "已保存", "设置已保存，下次执行时生效。")
 
     # ---------------- 关于 ----------------
+    @staticmethod
+    def _open_url(url: str) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        QDesktopServices.openUrl(QUrl(url))
+
+    def _open_home(self) -> None:
+        """项目主页 = GitHub 最新 Release：拿安装包直链，浏览器直接开始下载。"""
+        from app.ui.about_texts import RELEASES_URL, REPO_URL
+        from app.workers import ReleaseInfoWorker
+        if getattr(self, "_home_worker", None) and self._home_worker.isRunning():
+            return
+        self.btn_home.setEnabled(False)
+        self.btn_home.setText("正在获取最新版本…")
+        w = ReleaseInfoWorker(REPO_URL)
+
+        def _ok(tag: str, url: str) -> None:
+            self._open_url(url)
+            self.win.statusBar().showMessage(f"已打开 v{tag} 下载地址")
+
+        def _fail(msg: str) -> None:
+            # 接口不通（国内访问 GitHub API 时常抽风）就直接开 Release 页
+            self._open_url(RELEASES_URL)
+            self.win.statusBar().showMessage(f"接口不可用，已打开发布页：{msg}")
+
+        def _reset() -> None:
+            self.btn_home.setEnabled(True)
+            self.btn_home.setText("项目主页（GitHub Releases）")
+
+        w.info.connect(_ok)
+        w.fail.connect(_fail)
+        w.finished.connect(_reset)
+        self._home_worker = w
+        w.start()
+
     def _show_doc(self, key: str) -> None:
         """滚动文本窗：显示协议 / 声明 / 帮助 / 更新日志。"""
         from PySide6.QtWidgets import QDialog, QScrollArea
@@ -1458,15 +1714,23 @@ class SettingsPage(QWidget):
         self.btn_update.setEnabled(False)
         self.btn_update.setText("检查中…")
         w = CheckUpdateWorker(REPO_URL)
-        w.ok.connect(lambda tag: QMessageBox.information(
-            self, "发现新版本",
-            f"最新版本 v{tag}，当前 v{APP_VERSION}。\n\n请到项目主页下载新版本安装包。"))
+        self._latest_url = ""
+
+        def _has_new(tag: str) -> None:
+            if QMessageBox.question(
+                    self, "发现新版本",
+                    f"最新版本 v{tag}，当前 v{APP_VERSION}。\n\n要现在打开下载地址吗？"
+            ) == QMessageBox.StandardButton.Yes:
+                self._open_url(self._latest_url or f"{REPO_URL}/releases/latest")
+
+        w.release.connect(lambda _tag, url: setattr(self, "_latest_url", url))
+        w.ok.connect(_has_new)
         w.up_to_date.connect(lambda: QMessageBox.information(
             self, "已是最新", f"当前 v{APP_VERSION} 已是最新版本。"))
         w.fail.connect(lambda msg: QMessageBox.warning(
             self, "检查失败",
             f"暂时无法检查更新：{msg}\n\n可能是网络原因（GitHub 访问不稳定），"
-            f"可稍后再试，或直接到项目主页查看最新 Release。"))
+            f"可稍后再试，或点下面的「项目主页」直接打开发布页。"))
         def _done():
             self.btn_update.setEnabled(True)
             self.btn_update.setText("检查更新")

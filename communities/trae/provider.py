@@ -34,6 +34,51 @@ class TraeSnapshot:
     checked: bool = False
 
 
+def _clean_name(value) -> str:
+    """把接口里的昵称字段收拾成适合显示的名字。"""
+    s = str(value or "").strip()
+    if not s or s.lower() in ("null", "none", "undefined"):
+        return ""
+    # 只拿到邮箱时取 @ 前面那段，整串邮箱当账号名太长
+    if "@" in s and not s.startswith("@"):
+        s = s.split("@")[0]
+    return s[:24]
+
+
+def name_from_data(data) -> str:
+    """从用户资料响应里挖昵称：优先 nickname / userName，最后才用邮箱。"""
+    if not isinstance(data, (dict, list)):
+        return ""
+    for keys in (("nickname", "nickName", "displayName", "display_name"),
+                 ("userName", "username", "user_name", "accountName", "account_name"),
+                 ("name",),
+                 ("email", "mail")):
+        v = find_first(data, keys)
+        name = _clean_name(v) if isinstance(v, str) else ""
+        if name:
+            return name
+    return ""
+
+
+def name_from_token(token: str) -> str:
+    """JWT payload 里如果带了昵称 / 邮箱，拿出来当兜底名字。"""
+    import base64
+    import json
+    tok = (token or "").strip()
+    for prefix in ("Cloud-IDE-JWT ", "Bearer ", "bearer "):
+        if tok.startswith(prefix):
+            tok = tok[len(prefix):].strip()
+    parts = tok.split(".")
+    if len(parts) < 2:
+        return ""
+    seg = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(seg).decode("utf-8"))
+    except Exception:
+        return ""
+    return name_from_data(payload)
+
+
 class TraeProvider:
     def __init__(self, cred: Credential, storage: Storage | None = None,
                  min_interval: float | None = None):
@@ -87,6 +132,40 @@ class TraeProvider:
         if not r.ok:
             raise TraeError(f"{action}失败：{r}")
 
+    # ---------- 昵称 ----------
+    _NAME_RETRY: dict[str, float] = {}      # 取昵称失败后 30 分钟内不再重试
+
+    def _ensure_nickname(self) -> str:
+        """补齐账号昵称：接口资料 > 本地缓存 > token 里的字段。
+
+        只在还没有昵称时发一次请求；拿不到就保持空，界面会退回「账号xxxx」，
+        不影响签到。拿到后写回 cred，RefreshWorker 会把账号存回去。
+        """
+        if self.cred.nickname:
+            return self.cred.nickname
+        cached = _clean_name(self.cred.extra.get("nickname"))
+        if cached:
+            self.cred.nickname = cached
+            return cached
+        key = self.cred.uid or self.cred.token[-10:]
+        if self._NAME_RETRY.get(key, 0) > time.time():
+            return ""                       # 刚失败过，别每次都多打两次接口
+        name = ""
+        try:
+            r = self.client.user_info()
+            if r.ok:
+                name = name_from_data(r.data)
+        except Exception:                                   # noqa: BLE001
+            name = ""
+        if not name:
+            name = name_from_token(self.cred.token)
+        if name:
+            self.cred.nickname = name
+            self.cred.extra["nickname"] = name
+        else:
+            self._NAME_RETRY[key] = time.time() + 1800
+        return name
+
     # ---------- 快照 ----------
     def _status(self) -> tuple[bool, int, TraeResult]:
         """返回 (今日已签, 今日已得积分, 原始结果)。"""
@@ -126,10 +205,14 @@ class TraeProvider:
 
     def snapshot(self, with_sign_state: bool = True) -> TraeSnapshot:
         snap = TraeSnapshot()
+        self._ensure_nickname()
         checked, amount, _ = self._status()
         snap.checked = checked
         total = self._balance()
         reward = self._reward()
+        # status 接口多数情况下不带「今日已得」，这时按「已签到 → 今日上限」补：
+        # 签到是固定数额的一次性发放，签过就等于拿到了 reward
+        today = amount if amount >= 0 else (reward if checked else 0)
         # Trae 只有一个签到任务
         snap.daily = [MissionItem(
             mission_id=1, name="每日签到",
@@ -138,8 +221,8 @@ class TraeProvider:
             happened_times=1 if checked else 0,
             is_get_award=checked, mission_key="checkin")]
         snap.coin = CoinInfo(
-            total=max(total, 0), today=amount if amount >= 0 else 0,
-            can_get=0 if checked else reward, received=amount if checked and amount >= 0 else 0,
+            total=max(total, 0), today=max(today, 0),
+            can_get=0 if checked else reward, received=today if checked else 0,
             cap=0)
         if self.storage:
             self.storage.add_coin_snapshot(self.cred.key, snap.coin.total, snap.coin.today)
@@ -157,6 +240,7 @@ class TraeProvider:
                  "给一个账号签到，多账号请各用各的机器。")
 
     def run_checkin(self) -> list[TaskResult]:
+        self._ensure_nickname()
         checked, amount, _ = self._status()
         if checked:
             extra = f"，今日已得 {amount} {self.cred.currency}" if amount >= 0 else ""
@@ -180,16 +264,17 @@ class TraeProvider:
         if r.ok:
             got = find_first(r.data, AMOUNT_KEYS, only_int=True, substr=True)
             got = int(got) if got is not None else 0
-            res = self._record(TaskKind.TOOL_SIGN, "Trae 每日签到", TaskStatus.SUCCESS,
-                               "签到成功", points=max(got, 0))
-            if got <= 0 and amount >= 0:
-                # claim 响应没带数量，用签到前后 status 的差值补
+            if got <= 0:
+                # claim 响应通常只有 {code, message}，用签到前后 status 的差值补
                 _, amount2, _ = self._status()
                 if amount2 > amount >= 0:
-                    res.points = amount2 - amount
-                    if self.storage and res.run_id:
-                        self.storage.set_run_points(res.run_id, res.points)
-            return [res]
+                    got = amount2 - amount
+            if got <= 0:
+                # status 也不给数时，按活动里公布的签到额度记（签到是固定值）
+                got = self._reward()
+            msg = "签到成功" if got > 0 else "签到成功（服务端未返回积分数量）"
+            return [self._record(TaskKind.TOOL_SIGN, "Trae 每日签到", TaskStatus.SUCCESS,
+                                 msg, points=max(got, 0))]
         msg = f"领取失败：{r}"
         if r.code in self.BUSY_CODES or "太多" in (r.msg or ""):
             msg += f"\n{self.BUSY_HINT}"
@@ -268,6 +353,22 @@ def prepare_import(cred) -> None:
             "（Cloud-IDE-JWT 开头，整段粘贴即可，带不带前缀都认）。")
     # uid 优先用 JWT 里的真实用户 id（跨 token 刷新稳定），取不到退回 token 指纹
     cred.uid = real_uid_from_token(cred.token) or uid_from_token(cred.token)
+    # 顺手取一次昵称：导入完账号表格里就能看到名字，而不是一串 uid
+    if not cred.nickname:
+        name = ""
+        try:
+            c = TraeClient(cred.token, min_interval=0)
+            r = c.user_info()
+            c.close()
+            if r.ok:
+                name = name_from_data(r.data)
+        except Exception:                                   # noqa: BLE001
+            name = ""
+        if not name:
+            name = name_from_token(cred.token)
+        if name:
+            cred.nickname = name
+            cred.extra["nickname"] = name
 
 
 def _autodetect_token(cred) -> str:

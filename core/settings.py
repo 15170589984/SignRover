@@ -5,7 +5,14 @@ import json
 from pathlib import Path
 
 DEFAULT_INTERVAL = 2.0
-DEFAULTS: dict = {"adb": "", "interval": DEFAULT_INTERVAL}
+DEFAULT_SCHEDULE: dict = {
+    "enabled": False,
+    "time": "08:00",        # HH:MM，本机时间
+    "days": "daily",        # daily / weekday
+    "scope": "__all__",     # "__all__" 或账号 key（community:aid）
+    "last_run": "",         # 上次自动执行的日期 YYYY-MM-DD，防同一天重复跑
+}
+DEFAULTS: dict = {"adb": "", "interval": DEFAULT_INTERVAL, "schedule": DEFAULT_SCHEDULE}
 
 
 class Settings:
@@ -53,6 +60,31 @@ class Settings:
     @interval.setter
     def interval(self, value: float) -> None:
         self.data["interval"] = max(1.0, min(30.0, float(value)))
+
+    @property
+    def schedule(self) -> dict:
+        """定时执行配置，字段缺失时用默认值补齐（老配置文件升级后也能用）。"""
+        cur = self.data.get("schedule")
+        if not isinstance(cur, dict):
+            cur = {}
+        out = dict(DEFAULT_SCHEDULE)
+        out.update({k: v for k, v in cur.items() if k in DEFAULT_SCHEDULE})
+        if out.get("days") not in ("daily", "weekday"):
+            out["days"] = "daily"
+        t = str(out.get("time") or "08:00")
+        try:
+            hh, mm = t.split(":")[:2]
+            out["time"] = f"{max(0, min(23, int(hh))):02d}:{max(0, min(59, int(mm))):02d}"
+        except (ValueError, AttributeError):
+            out["time"] = "08:00"
+        out["enabled"] = bool(out.get("enabled"))
+        return out
+
+    def set_schedule(self, **kwargs) -> dict:
+        sched = self.schedule
+        sched.update({k: v for k, v in kwargs.items() if k in DEFAULT_SCHEDULE})
+        self.data["schedule"] = sched
+        return sched
 
 
 _cache: Settings | None = None

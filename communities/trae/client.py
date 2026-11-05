@@ -227,3 +227,20 @@ class TraeClient:
             return r
         return self._call_auto("trae/api/v2/pay/ide_user_ent_usage", prefer_get=True,
                                json_body=self._body())
+
+    def user_info(self) -> TraeResult:
+        """用户资料（昵称 / 用户名 / 邮箱 / 头像）。
+
+        客户端登录后调的是 cloudide 的 GetUserInfo（POST，返回 {Result:{...}}），
+        成功后把昵称写进账号，界面就不再显示「账号5xxxx」这种编号名。
+        拿不到时退回 iCube 的 /icube/api/v1/user，两个都失败也不算致命——
+        签到本身不依赖它。
+        """
+        r = self._call("POST", "cloudide/api/v3/trae/GetUserInfo",
+                       json_body={"ReqSource": "IDE", "IDEVersion": APP_VERSION})
+        if r.ok and r.data:
+            return r
+        r2 = self._call_auto("icube/api/v1/user", prefer_get=True)
+        if r2.ok and r2.data:
+            return r2
+        return r
