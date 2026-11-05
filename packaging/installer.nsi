@@ -19,7 +19,7 @@ SetCompressorDictSize 64
 ; 避免中文路径在部分工具链、脚本、杀软白名单里出问题
 !define APP_NAME    "社区签到助手"
 !define APP_DIR     "SignRover"
-!define APP_VERSION "1.3.7"
+!define APP_VERSION "1.3.8"
 !define APP_EXE     "SignRover.exe"
 !define APP_KEY     "社区签到助手"
 !define APP_PUB     "社区签到助手"
@@ -29,7 +29,7 @@ SetCompressorDictSize 64
 !define FALLBACK_DIR "$LOCALAPPDATA\Programs\${APP_DIR}"
 
 Name "${APP_NAME} ${APP_VERSION}"
-OutFile "${PROJ}\dist\${APP_NAME}_v${APP_VERSION}_安装包.exe"
+OutFile "${PROJ}\dist\${APP_NAME}_v${APP_VERSION}.exe"
 InstallDir "${DEFAULT_ROOT}\${APP_DIR}"
 ; 装在用户可写目录，不需要管理员权限，双击直接装完（也便于自动化安装验证）
 RequestExecutionLevel user

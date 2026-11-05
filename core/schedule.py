@@ -31,8 +31,11 @@ def should_fire(now: datetime, sched: dict) -> bool:
     """此刻是否该自动执行。"""
     if not sched.get("enabled"):
         return False
-    if sched.get("last_run") == now.strftime("%Y-%m-%d"):
+    today = now.strftime("%Y-%m-%d")
+    if sched.get("last_run") == today:
         return False                       # 今天已经跑过
+    if sched.get("suppressed") == today:
+        return False                       # 勾选时今天的点已过，被有意跳过
     t = target_today(now, sched)
     return t is not None and now >= t
 
@@ -43,7 +46,8 @@ def next_run(now: datetime, sched: dict) -> datetime | None:
         return None
     hh, mm = _hhmm(sched)
     weekday_only = sched.get("days") == "weekday"
-    ran_today = sched.get("last_run") == now.strftime("%Y-%m-%d")
+    ran_today = sched.get("last_run") == now.strftime("%Y-%m-%d") or \
+        sched.get("suppressed") == now.strftime("%Y-%m-%d")
     for day in range(0, 8):
         d = now + timedelta(days=day)
         if weekday_only and d.weekday() >= 5:

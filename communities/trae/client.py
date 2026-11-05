@@ -62,7 +62,8 @@ class TraeResult:
 
     @property
     def token_invalid(self) -> bool:
-        return self.code in (401, 403, 40101, 40300)
+        # HTTP 错误时 code 存的是 -status_code，按绝对值判
+        return abs(self.code) in (401, 403, 40101, 40300)
 
     def __str__(self) -> str:
         base = f"code={self.code} {self.msg}".strip()
@@ -157,13 +158,16 @@ class TraeClient:
         self._last = time.monotonic()
 
     def _call(self, method: str, path: str, json_body: dict | None = None,
-              retries: int = 1) -> TraeResult:
+              retries: int = 1, extra_headers: dict | None = None) -> TraeResult:
         url = f"{BASE}/{path.lstrip('/')}"
+        headers = self._headers()
+        if extra_headers:
+            headers.update(extra_headers)
         last = TraeResult(msg="未执行")
         for attempt in range(retries + 1):
             self._throttle()
             try:
-                r = self.http.request(method, url, json=json_body, headers=self._headers())
+                r = self.http.request(method, url, json=json_body, headers=headers)
                 body = (r.text or "")[:400]
                 if r.status_code != 200:
                     last = TraeResult(code=-r.status_code, msg=f"HTTP {r.status_code}",
@@ -229,18 +233,20 @@ class TraeClient:
                                json_body=self._body())
 
     def user_info(self) -> TraeResult:
-        """用户资料（昵称 / 用户名 / 邮箱 / 头像）。
+        """用户资料（昵称 / 头像 / 手机号脱敏）。
 
-        客户端登录后调的是 cloudide 的 GetUserInfo（POST，返回 {Result:{...}}），
-        成功后把昵称写进账号，界面就不再显示「账号5xxxx」这种编号名。
-        拿不到时退回 iCube 的 /icube/api/v1/user，两个都失败也不算致命——
-        签到本身不依赖它。
+        已抓包确认（Trae 3.4.14，Reqable + main.log 双重验证）：这个接口
+        鉴权用 `x-cloudide-token` 头，**不是** Authorization；用错头时
+        返回 200 + {data:{loginAllowed:true}}（假成功）或 401「未登录」。
+        成功响应是 {ResponseMetadata:..., Result:{ScreenName, UserID,
+        AvatarUrl, NonPlainTextMobile, ...}}，Result 里才有资料。
         """
         r = self._call("POST", "cloudide/api/v3/trae/GetUserInfo",
-                       json_body={"ReqSource": "IDE", "IDEVersion": APP_VERSION})
-        if r.ok and r.data:
-            return r
-        r2 = self._call_auto("icube/api/v1/user", prefer_get=True)
-        if r2.ok and r2.data:
-            return r2
+                       json_body={"ReqSource": "IDE", "IDEVersion": APP_VERSION},
+                       extra_headers={"x-cloudide-token": self.token})
+        if r.ok and not find_first(r.data, NAME_KEYS, substr=True) \
+                and not find_first(r.data, ("ScreenName", "screenName")):
+            # 200 但只有 loginAllowed：等于没拿到，按失败处理
+            return TraeResult(code=-1, msg="返回里没有用户资料", data=r.data,
+                              http_status=200, raw=r.raw)
         return r

@@ -9,30 +9,6 @@ from core.settings import settings
 from core.storage import Storage
 
 
-class CheckUpdateWorker(QThread):
-    """检查更新：匿名读一次 GitHub Releases，不携带任何本地数据。"""
-    ok = Signal(str)             # 最新版本号（v 前缀去掉）
-    up_to_date = Signal()        # 已是最新
-    fail = Signal(str)           # 网络等原因失败
-    release = Signal(str, str)   # (版本号, 安装包下载地址)
-
-    def __init__(self, repo_url: str, parent=None):
-        super().__init__(parent)
-        self.repo_url = repo_url.rstrip("/")
-
-    def run(self) -> None:
-        try:
-            tag, url, _html = fetch_latest_release(self.repo_url)
-            from core.version import VERSION
-            if _version_tuple(tag) > _version_tuple(VERSION):
-                self.release.emit(tag, url)
-                self.ok.emit(tag)
-            else:
-                self.up_to_date.emit()
-        except Exception as e:                       # noqa: BLE001
-            self.fail.emit(f"{type(e).__name__}: {e}")
-
-
 class ReleaseInfoWorker(QThread):
     """给「项目主页」按钮用：拿最新 Release 的安装包直链，点一下就开始下载。"""
     info = Signal(str, str)      # (版本号, 下载地址)

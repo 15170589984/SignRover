@@ -46,10 +46,11 @@ def _clean_name(value) -> str:
 
 
 def name_from_data(data) -> str:
-    """从用户资料响应里挖昵称：优先 nickname / userName，最后才用邮箱。"""
+    """从用户资料响应里挖昵称：优先 nickname / ScreenName，最后才用邮箱。"""
     if not isinstance(data, (dict, list)):
         return ""
-    for keys in (("nickname", "nickName", "displayName", "display_name"),
+    for keys in (("nickname", "nickName", "ScreenName", "screenName",
+                  "displayName", "display_name"),
                  ("userName", "username", "user_name", "accountName", "account_name"),
                  ("name",),
                  ("email", "mail")):
@@ -265,10 +266,15 @@ class TraeProvider:
             got = find_first(r.data, AMOUNT_KEYS, only_int=True, substr=True)
             got = int(got) if got is not None else 0
             if got <= 0:
-                # claim 响应通常只有 {code, message}，用签到前后 status 的差值补
+                # claim 响应通常只有 {code, message}，用签到后 status 补：
+                # 先试「前后差值」，差值算不出就直接取 status 里的当日积分
+                # （签到前 credits 是 0，签到后就是本次到账数）
                 _, amount2, _ = self._status()
-                if amount2 > amount >= 0:
-                    got = amount2 - amount
+                base = amount if amount >= 0 else 0
+                if amount2 > base:
+                    got = amount2 - base
+                elif amount2 > 0:
+                    got = amount2
             if got <= 0:
                 # status 也不给数时，按活动里公布的签到额度记（签到是固定值）
                 got = self._reward()

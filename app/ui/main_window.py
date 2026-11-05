@@ -297,7 +297,7 @@ class MainWindow(QMainWindow):
             self.page_tasks.refresh_schedule_ui()
             return
         # 先记账再执行：即使这轮失败也不该在同一天反复重试
-        s.set_schedule(last_run=now.strftime("%Y-%m-%d"))
+        s.set_schedule(last_run=now.strftime("%Y-%m-%d"), suppressed="")
         try:
             s.save()
         except OSError:
@@ -886,7 +886,8 @@ class TasksPage(QWidget):
     # ---------- 定时执行 ----------
     def _schedule_card(self) -> QWidget:
         """任务页顶部的定时执行条：到点自动跑当前选择（或全部平台）。"""
-        from PySide6.QtWidgets import QTimeEdit
+        from PySide6.QtGui import QRegularExpressionValidator
+        from PySide6.QtCore import QRegularExpression
         from core.settings import settings as load_settings
 
         card = Card(padding=16, spacing=8)
@@ -906,12 +907,17 @@ class TasksPage(QWidget):
             max(0, self.cb_sched_days.findData(s.get("days") or "daily")))
         row.addWidget(self.cb_sched_days)
 
-        self.te_sched = QTimeEdit()
-        self.te_sched.setDisplayFormat("HH:mm")
-        self.te_sched.setFixedWidth(90)
-        hh, mm = (s.get("time") or "08:00").split(":")
-        self.te_sched.setTime(QTime(int(hh), int(mm)))
-        row.addWidget(self.te_sched)
+        row.addWidget(field_label("时间"))
+        # 纯手输框：直接键入 08:30 这类时间，不搞上下箭头
+        self.e_sched_time = QLineEdit((s.get("time") or "08:00"))
+        self.e_sched_time.setFixedWidth(64)
+        self.e_sched_time.setAlignment(Qt.AlignCenter)
+        self.e_sched_time.setToolTip("24 小时制，格式 HH:mm，如 08:30、21:05")
+        self.e_sched_time.setValidator(QRegularExpressionValidator(
+            QRegularExpression(r"([01]?[0-9]|2[0-3]):[0-5][0-9]")))
+        self.e_sched_time.editingFinished.connect(self._normalize_sched_time)
+        self.e_sched_time.editingFinished.connect(self._on_sched_changed)
+        row.addWidget(self.e_sched_time)
 
         row.addWidget(field_label("自动执行"))
         self.cb_sched_scope = QComboBox()
@@ -930,14 +936,27 @@ class TasksPage(QWidget):
 
         self.cb_sched.toggled.connect(self._on_sched_changed)
         self.cb_sched_days.currentIndexChanged.connect(self._on_sched_changed)
-        self.te_sched.timeChanged.connect(self._on_sched_changed)
         self.cb_sched_scope.currentIndexChanged.connect(self._on_sched_changed)
         self._sync_sched_enabled()
         return card
 
+    def _normalize_sched_time(self) -> None:
+        """失焦时把 8:5 这类输入收拾成 08:05；非法就退回配置里的值。"""
+        from core.settings import settings as load_settings
+        t = self.e_sched_time.text().strip()
+        try:
+            hh, mm = t.split(":")[:2]
+            hh, mm = int(hh), int(mm)
+            if not (0 <= hh <= 23 and 0 <= mm <= 59):
+                raise ValueError
+        except (ValueError, AttributeError):
+            self.e_sched_time.setText(load_settings().schedule.get("time") or "08:00")
+            return
+        self.e_sched_time.setText(f"{hh:02d}:{mm:02d}")
+
     def _sync_sched_enabled(self) -> None:
         on = self.cb_sched.isChecked()
-        for w in (self.cb_sched_days, self.te_sched, self.cb_sched_scope):
+        for w in (self.cb_sched_days, self.e_sched_time, self.cb_sched_scope):
             w.setEnabled(on)
 
     def _on_sched_changed(self) -> None:
@@ -949,13 +968,17 @@ class TasksPage(QWidget):
         sched = s.set_schedule(
             enabled=self.cb_sched.isChecked(),
             days=self.cb_sched_days.currentData() or "daily",
-            time=self.te_sched.time().toString("HH:mm"),
+            time=self.e_sched_time.text().strip(),
             scope=self.cb_sched_scope.currentData() or self.ALL,
         )
-        # 刚打开时如果今天这个点已经过了，不立刻补跑（避免一勾选就跳起来执行），
-        # 把今天记为已跑，明天开始生效
-        if sched["enabled"] and should_fire(datetime.now(), {**sched, "last_run": ""}):
-            s.set_schedule(last_run=datetime.now().strftime("%Y-%m-%d"))
+        today = datetime.now().strftime("%Y-%m-%d")
+        if sched["enabled"] and should_fire(datetime.now(), {**sched, "last_run": "",
+                                                             "suppressed": ""}):
+            # 勾选（或改配置）时今天的点已经过了：只把今天标记为跳过，
+            # 不动 last_run；之后把时间改到未来，今天照样能触发
+            s.set_schedule(suppressed=today)
+        else:
+            s.set_schedule(suppressed="")
         try:
             s.save()
         except OSError:
@@ -1531,57 +1554,22 @@ class SettingsPage(QWidget):
             "数据库文件会小一些，明细页也更轻快。"))
         lay.addWidget(card2)
 
-        # ---- 关于 ----
-        from app.ui.about_texts import ABOUT_TEXTS, REPO_URL
-        from app.workers import CheckUpdateWorker
-        from PySide6.QtCore import QThread
-        self._update_worker: QThread | None = None
+        # ---- 关于：只有一个 GitHub Releases 按钮 ----
+        from app.ui.about_texts import REPO_URL
 
         card3 = Card(padding=18, spacing=12)
         card3.body().addWidget(title("关于"))
-
-        ver_row = QHBoxLayout()
-        ver_row.setSpacing(10)
-        self.lb_version = muted(f"当前版本 v{APP_VERSION}")
-        ver_row.addWidget(self.lb_version)
-        self.btn_update = QPushButton("检查更新")
-        self.btn_update.clicked.connect(self._check_update)
-        ver_row.addWidget(self.btn_update)
-        ver_row.addStretch(1)
-        card3.body().addLayout(ver_row)
-
-        docs_row = QHBoxLayout()
-        docs_row.setSpacing(8)
-        for key in ("user_agreement", "privacy", "oss", "help", "changelog"):
-            b = QPushButton(ABOUT_TEXTS[key][0])
-            b.clicked.connect(lambda _=False, k=key: self._show_doc(k))
-            docs_row.addWidget(b)
-        docs_row.addStretch(1)
-        card3.body().addLayout(docs_row)
-
-        contact_row = QHBoxLayout()
-        contact_row.setSpacing(8)
-        for label in ("联系我们", "官方社区", "报告问题"):
-            b = QPushButton(label)
-            b.setEnabled(False)          # 入口先占位，联系方式确定后开放
-            b.setToolTip("即将开放")
-            contact_row.addWidget(b)
-        contact_row.addStretch(1)
-        card3.body().addLayout(contact_row)
-
-        link_row = QHBoxLayout()
-        link_row.setSpacing(8)
-        self.btn_home = QPushButton("项目主页（GitHub Releases）")
+        row3 = QHBoxLayout()
+        row3.setSpacing(10)
+        self.btn_home = QPushButton("GitHub Releases")
+        self.btn_home.setObjectName("Primary")
         self.btn_home.setCursor(Qt.PointingHandCursor)
-        self.btn_home.setToolTip("打开最新版本的下载地址（有安装包附件时直接开始下载）")
+        self.btn_home.setToolTip("查最新版本，有新安装包直接开始下载")
         self.btn_home.clicked.connect(self._open_home)
-        link_row.addWidget(self.btn_home)
-        link_row.addStretch(1)
-        card3.body().addLayout(link_row)
-        card3.body().addWidget(hint(
-            f"项目主页：{REPO_URL}\n"
-            "点「项目主页」会打开 GitHub 上最新 Release 的安装包；"
-            "也可以点旁边的「检查更新」先看有没有新版本。"))
+        row3.addWidget(self.btn_home)
+        row3.addStretch(1)
+        card3.body().addLayout(row3)
+        card3.body().addWidget(hint(f"当前版本 v{APP_VERSION} · {REPO_URL}/releases"))
         lay.addWidget(card3)
 
         lay.addStretch(1)
@@ -1669,7 +1657,7 @@ class SettingsPage(QWidget):
 
         def _reset() -> None:
             self.btn_home.setEnabled(True)
-            self.btn_home.setText("项目主页（GitHub Releases）")
+            self.btn_home.setText("GitHub Releases")
 
         w.info.connect(_ok)
         w.fail.connect(_fail)
@@ -1704,36 +1692,3 @@ class SettingsPage(QWidget):
         row.addWidget(close)
         v.addLayout(row)
         dlg.exec()
-
-    def _check_update(self) -> None:
-        """后台线程查一次 GitHub Releases，失败给友好提示，UI 不卡。"""
-        from app.ui.about_texts import REPO_URL
-        from app.workers import CheckUpdateWorker
-        if self._update_worker and self._update_worker.isRunning():
-            return
-        self.btn_update.setEnabled(False)
-        self.btn_update.setText("检查中…")
-        w = CheckUpdateWorker(REPO_URL)
-        self._latest_url = ""
-
-        def _has_new(tag: str) -> None:
-            if QMessageBox.question(
-                    self, "发现新版本",
-                    f"最新版本 v{tag}，当前 v{APP_VERSION}。\n\n要现在打开下载地址吗？"
-            ) == QMessageBox.StandardButton.Yes:
-                self._open_url(self._latest_url or f"{REPO_URL}/releases/latest")
-
-        w.release.connect(lambda _tag, url: setattr(self, "_latest_url", url))
-        w.ok.connect(_has_new)
-        w.up_to_date.connect(lambda: QMessageBox.information(
-            self, "已是最新", f"当前 v{APP_VERSION} 已是最新版本。"))
-        w.fail.connect(lambda msg: QMessageBox.warning(
-            self, "检查失败",
-            f"暂时无法检查更新：{msg}\n\n可能是网络原因（GitHub 访问不稳定），"
-            f"可稍后再试，或点下面的「项目主页」直接打开发布页。"))
-        def _done():
-            self.btn_update.setEnabled(True)
-            self.btn_update.setText("检查更新")
-        w.finished.connect(_done)
-        self._update_worker = w
-        w.start()
