@@ -1,12 +1,14 @@
 """定时执行的纯逻辑（不碰界面，方便单测）。
 
-规则（对齐 Windows 任务计划 StartWhenAvailable / systemd Persistent 语义）：
-- 到点后触发一次；触发过就把日期记进 last_run，同一天不会重复跑。
-- 启用或改配置时，如果今天的时刻已经过了且今天还没跑过 → 立即补跑一次
-  （「错过的任务尽快执行」，而不是跳过今天）。
-- 工作日模式只在北京时间周一~周五触发，周末顺延到下一个工作日。
-- 程序没开的时候到点当然不会跑：下次启动时若今天还没跑过、且时间已过，
-  会补跑一次（last_run 存在配置里，重启也不会重复）。
+去重模型：按「时刻槽」而不是按「天」。
+- last_run 记录的是最近一次触发对应的完整时刻「YYYY-MM-DD HH:MM」；
+- 同一个时刻只触发一次（20 秒巡检不会重复跑）；
+- 用户把时间从 14:55 改成 15:40，15:40 就是新槽，到点必跑
+  （这正是「设置几点就几点执行」的预期）；
+- 启用/改配置时如果设置的时刻已过且该槽没跑过 → 立即补跑
+  （对齐 Windows 任务计划 StartWhenAvailable / systemd Persistent）；
+- 工作日模式只在北京时间周一~周五触发，周末顺延到下一个工作日；
+- 程序没开的时候到点当然不会跑：下次启动时该槽没跑过且已过点，会补跑。
 """
 from __future__ import annotations
 
@@ -29,14 +31,19 @@ def target_today(now: datetime, sched: dict) -> datetime | None:
     return now.replace(hour=hh, minute=mm, second=0, microsecond=0)
 
 
+def slot_of(t: datetime) -> str:
+    """时刻槽的存储格式：YYYY-MM-DD HH:MM。"""
+    return t.strftime("%Y-%m-%d %H:%M")
+
+
 def should_fire(now: datetime, sched: dict) -> bool:
-    """此刻是否该自动执行。"""
+    """此刻是否该自动执行：到点 && 这个时刻槽没跑过。"""
     if not sched.get("enabled"):
         return False
-    if sched.get("last_run") == now.strftime("%Y-%m-%d"):
-        return False                       # 今天已经跑过
     t = target_today(now, sched)
-    return t is not None and now >= t
+    if t is None or now < t:
+        return False
+    return sched.get("last_run") != slot_of(t)
 
 
 def next_run(now: datetime, sched: dict) -> datetime | None:
@@ -45,7 +52,6 @@ def next_run(now: datetime, sched: dict) -> datetime | None:
         return None
     hh, mm = _hhmm(sched)
     weekday_only = sched.get("days") == "weekday"
-    ran_today = sched.get("last_run") == now.strftime("%Y-%m-%d")
     for day in range(0, 8):
         d = now + timedelta(days=day)
         if weekday_only and d.weekday() >= 5:
@@ -53,8 +59,8 @@ def next_run(now: datetime, sched: dict) -> datetime | None:
         cand = d.replace(hour=hh, minute=mm, second=0, microsecond=0)
         if cand < now:
             continue
-        if day == 0 and ran_today:
-            continue                        # 今天这次已经跑掉了
+        if day == 0 and sched.get("last_run") == slot_of(cand):
+            continue                        # 今天这个槽已经跑掉了
         return cand
     return None
 
