@@ -297,7 +297,7 @@ class MainWindow(QMainWindow):
             self.page_tasks.refresh_schedule_ui()
             return
         # 先记账再执行：即使这轮失败也不该在同一天反复重试
-        s.set_schedule(last_run=now.strftime("%Y-%m-%d"), suppressed="")
+        s.set_schedule(last_run=now.strftime("%Y-%m-%d"))
         try:
             s.save()
         except OSError:
@@ -932,7 +932,8 @@ class TasksPage(QWidget):
 
         card.body().addWidget(hint(
             "到点后自动开始，正在执行其它任务时会跳过这一次。程序要开着才会触发，"
-            "可在「设置 → 运行环境」里打开开机自启；错过时间的话，下次启动会补跑一次。"))
+            "可在「设置 → 运行环境」里打开开机自启；勾选时如果今天的时间已过，"
+            "会立即补跑一次（同一天只跑一次）。"))
 
         self.cb_sched.toggled.connect(self._on_sched_changed)
         self.cb_sched_days.currentIndexChanged.connect(self._on_sched_changed)
@@ -971,18 +972,14 @@ class TasksPage(QWidget):
             time=self.e_sched_time.text().strip(),
             scope=self.cb_sched_scope.currentData() or self.ALL,
         )
-        today = datetime.now().strftime("%Y-%m-%d")
-        if sched["enabled"] and should_fire(datetime.now(), {**sched, "last_run": "",
-                                                             "suppressed": ""}):
-            # 勾选（或改配置）时今天的点已经过了：只把今天标记为跳过，
-            # 不动 last_run；之后把时间改到未来，今天照样能触发
-            s.set_schedule(suppressed=today)
-        else:
-            s.set_schedule(suppressed="")
         try:
             s.save()
         except OSError:
             pass
+        # 启用（或改配置）时今天的时刻已经过了且今天还没跑 → 立即补跑一次
+        # （对齐 Windows 任务计划 StartWhenAvailable：错过的任务尽快执行）
+        if sched["enabled"] and should_fire(datetime.now(), sched):
+            QTimer.singleShot(0, self.win._check_schedule)
         self.win.reload_schedule()
 
     def refresh_schedule_ui(self) -> None:
@@ -998,8 +995,13 @@ class TasksPage(QWidget):
             self.lb_sched_next.setText("未启用")
             return
         nxt = next_run(datetime.now(), s)
-        self.lb_sched_next.setText(
-            f"下次：{nxt.strftime('%m-%d %H:%M')}" if nxt else "下次：待定")
+        if not nxt:
+            self.lb_sched_next.setText("下次：待定")
+        else:
+            day = "今天" if nxt.date() == datetime.now().date() else (
+                "明天" if (nxt.date() - datetime.now().date()).days == 1
+                else nxt.strftime("%m-%d"))
+            self.lb_sched_next.setText(f"下次：{day} {nxt.strftime('%H:%M')}")
 
     def jobs_for_scope(self, scope: str) -> list[tuple[Credential, dict]]:
         """定时执行实际要跑的账号列表：全部平台，或指定账号。"""

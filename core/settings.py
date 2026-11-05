@@ -11,7 +11,6 @@ DEFAULT_SCHEDULE: dict = {
     "days": "daily",        # daily / weekday
     "scope": "__all__",     # "__all__" 或账号 key（community:aid）
     "last_run": "",         # 上次自动执行的日期 YYYY-MM-DD，防同一天重复跑
-    "suppressed": "",       # 勾选时今天的点已过 → 记今天，今天不再触发；改时间后清除
 }
 DEFAULTS: dict = {"adb": "", "interval": DEFAULT_INTERVAL, "schedule": DEFAULT_SCHEDULE}
 

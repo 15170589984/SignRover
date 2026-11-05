@@ -1,7 +1,9 @@
 """定时执行的纯逻辑（不碰界面，方便单测）。
 
-规则：
+规则（对齐 Windows 任务计划 StartWhenAvailable / systemd Persistent 语义）：
 - 到点后触发一次；触发过就把日期记进 last_run，同一天不会重复跑。
+- 启用或改配置时，如果今天的时刻已经过了且今天还没跑过 → 立即补跑一次
+  （「错过的任务尽快执行」，而不是跳过今天）。
 - 工作日模式只在北京时间周一~周五触发，周末顺延到下一个工作日。
 - 程序没开的时候到点当然不会跑：下次启动时若今天还没跑过、且时间已过，
   会补跑一次（last_run 存在配置里，重启也不会重复）。
@@ -31,11 +33,8 @@ def should_fire(now: datetime, sched: dict) -> bool:
     """此刻是否该自动执行。"""
     if not sched.get("enabled"):
         return False
-    today = now.strftime("%Y-%m-%d")
-    if sched.get("last_run") == today:
+    if sched.get("last_run") == now.strftime("%Y-%m-%d"):
         return False                       # 今天已经跑过
-    if sched.get("suppressed") == today:
-        return False                       # 勾选时今天的点已过，被有意跳过
     t = target_today(now, sched)
     return t is not None and now >= t
 
@@ -46,8 +45,7 @@ def next_run(now: datetime, sched: dict) -> datetime | None:
         return None
     hh, mm = _hhmm(sched)
     weekday_only = sched.get("days") == "weekday"
-    ran_today = sched.get("last_run") == now.strftime("%Y-%m-%d") or \
-        sched.get("suppressed") == now.strftime("%Y-%m-%d")
+    ran_today = sched.get("last_run") == now.strftime("%Y-%m-%d")
     for day in range(0, 8):
         d = now + timedelta(days=day)
         if weekday_only and d.weekday() >= 5:
