@@ -268,6 +268,8 @@ Section "Uninstall"
 
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_KEY}"
   DeleteRegKey HKCU "Software\${APP_KEY}"
+  ; 开机自启项也要清掉，否则卸载后每次开机都会报「找不到文件」
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "SignRover"
 
   ; 只有确认是本程序的安装目录才整体删除
   ${If} ${FileExists} "$INSTDIR\uninstall.exe"
