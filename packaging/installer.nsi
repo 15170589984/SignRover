@@ -29,7 +29,7 @@ SetCompressorDictSize 64
 !define FALLBACK_DIR "$LOCALAPPDATA\Programs\${APP_DIR}"
 
 Name "${APP_NAME} ${APP_VERSION}"
-OutFile "${PROJ}\dist\${APP_NAME}_v${APP_VERSION}.exe"
+OutFile "${PROJ}\dist\SignRover_v${APP_VERSION}.exe"
 InstallDir "${DEFAULT_ROOT}\${APP_DIR}"
 ; 装在用户可写目录，不需要管理员权限，双击直接装完（也便于自动化安装验证）
 RequestExecutionLevel user
